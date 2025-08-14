@@ -1,0 +1,19 @@
+requests>=2.31.0  # HTTP请求库
+
+# 核心浏览器自动化库（替代原生 selenium）
+selenium-wire>=5.1.0  # 兼容 Python 3.11 的最新稳定版
+
+# Selenium 基础依赖（selenium-wire 依赖）
+selenium>=4.9.1  # 与 selenium-wire 5.x 兼容的版本
+
+# ChromeDriver 自动管理工具
+webdriver-manager>=3.8.6  # 用于自动下载和管理 ChromeDriver
+
+# HTTP 请求库
+requests>=2.31.0  # 用于发送 HTTP 请求
+
+# 解决之前遇到的 blinker 模块缺失问题
+blinker==1.6.2  # 固定版本以确保_saferef模块存在
+
+# BeautifulSoup库，用于解析HTML
+beautifulsoup4>=4.9.3  # 用于解析HTML和XML文档
