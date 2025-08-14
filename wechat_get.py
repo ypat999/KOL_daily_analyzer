@@ -22,7 +22,7 @@ url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
 def load_cookie_from_file():
     """从wechat_cookies.json文件读取cookie值"""
     try:
-        with open("wechat_cookies.json", "r", encoding="utf-8") as f:
+        with open("wechat_cookies.txt", "r", encoding="utf-8") as f:
             cookie = f.read().strip()
             if not cookie:
                 print("警告: wechat_cookies.json文件为空")
