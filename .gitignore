@@ -218,5 +218,5 @@ archive_*/
 bili_cookies.json
 content_list.json
 daily_content_*
-wechat_cookies.txt
-deepseek_api_key.txt
+wechat_cookies*
+deepseek_api_key*

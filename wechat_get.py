@@ -3,6 +3,8 @@ from datetime import datetime, date
 from tqdm import tqdm
 from deepseek_summary import deepseek_summary
 
+LIMIT_HOURS = 24  # 18小时内的视频
+
 # 公众号fakeid列表
 account_list = {
     "MzI1NzAwNzY4OQ%3D%3D": "财经旗舰",
@@ -20,23 +22,28 @@ account_list = {
 url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
 
 def load_cookie_from_file():
-    """从wechat_cookies.json文件读取cookie值"""
+    """从wechat_cookies.json文件以JSON格式读取cookie和token值"""
     try:
-        with open("wechat_cookies.txt", "r", encoding="utf-8") as f:
-            cookie = f.read().strip()
-            if not cookie:
+        with open("wechat_cookies.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if not data:
                 print("警告: wechat_cookies.json文件为空")
-                return ""
-            return cookie
+                return "", ""
+            cookie = data.get("cookie", "")
+            token = data.get("token", "")
+            return cookie, token
     except FileNotFoundError:
         print("错误: 未找到wechat_cookies.json文件")
-        return ""
+        return "", ""
+    except json.JSONDecodeError:
+        print("错误: wechat_cookies.json文件格式不是有效的JSON")
+        return "", ""
     except Exception as e:
         print(f"读取cookie文件时出错: {e}")
-        return ""
+        return "", ""
 
-# 从文件读取cookie
-cookie = load_cookie_from_file()
+# 从文件读取cookie和token
+cookie, token = load_cookie_from_file()
 
 headers = {
     "Cookie": cookie,
@@ -44,7 +51,7 @@ headers = {
 }
 
 data = {
-    "token": "399999673",
+    "token": token,
     "lang": "zh_CN",
     "f": "json",
     "ajax": "1",
@@ -61,6 +68,9 @@ def get_total_count(fakeid):
     time.sleep(random.uniform(2, 4))
     data["fakeid"] = fakeid
     content_json = requests.get(url, headers=headers, params=data).json()
+    if "app_msg_cnt" not in content_json:
+        print(f"获取{fakeid}总数失败")
+        raise Exception([content_json['base_resp']['err_msg']])
     count = int(content_json["app_msg_cnt"])
     return count
 
@@ -76,7 +86,7 @@ def is_today_article(article):
             now = datetime.now()
             # 计算时间差（小时）
             time_diff = (now - article_datetime).total_seconds() / 3600
-            return time_diff <= 18
+            return time_diff <= LIMIT_HOURS
         return False
     except:
         return False
@@ -325,7 +335,7 @@ def collect_all_articles_content(today):
     
     # 遍历存档目录中的所有文件
     for filename in os.listdir(archive_dir):
-        if filename.endswith('.txt') and not filename.endswith('_summary.txt'):
+        if filename.startswith('wechat_') and filename.endswith('.txt') and not filename.endswith('_summary.txt'):
             filepath = os.path.join(archive_dir, filename)
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:

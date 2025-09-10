@@ -17,3 +17,13 @@ blinker==1.6.2  # 固定版本以确保_saferef模块存在
 
 # BeautifulSoup库，用于解析HTML
 beautifulsoup4>=4.9.3  # 用于解析HTML和XML文档
+
+# yt-dlp for video downloading
+yt-dlp>=2023.11.16  # 视频下载工具
+
+# faster-whisper for speech recognition
+faster-whisper>=0.9.0  # 快速语音识别库
+
+# 其他依赖
+torch==2.6.0 --no-index -f https://mirrors.aliyun.com/pytorch-wheels/cu124/  # faster-whisper依赖
+ctranslate2>=3.20.0  # faster-whisper依赖python

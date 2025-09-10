@@ -100,6 +100,8 @@ uin=your_uin_value; pass_ticket=your_pass_ticket_value; key=your_key_value; wxui
 
 #### 获取方式
 1. **浏览器获取**：
+   - 参考文章：https://zhuanlan.zhihu.com/p/714173074
+
    - 在浏览器中登录微信公众号平台（mp.weixin.qq.com，需注册一个公众号）
    - 打开开发者工具（F12）
    - 切换到Application标签
