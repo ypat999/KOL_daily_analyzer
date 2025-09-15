@@ -151,6 +151,64 @@ sk-your-api-key-here
 - 密钥泄露后请立即在平台撤销并重新生成
 - DeepSeek API可能有调用限制和费用，请关注使用情况
 
+## B站视频分析工具 (bili_summary.py)
+
+### 功能
+- 自动获取指定B站财经UP主18小时内发布的视频
+- 下载视频并提取字幕内容
+- 使用DeepSeek API生成投资建议分析
+- 按日期归档保存视频信息、字幕内容和投资建议
+- 支持断点续传，避免重复处理已保存视频
+
+### 配置
+在运行脚本前，需要配置以下参数：
+
+1. **UP主配置**：在`bili_summary.py`中修改`UP_MIDS`列表，配置目标UP主的用户ID
+   ```python
+   UP_MIDS = [
+       "1609483218",  #江浙陈某
+       "2137589551", #李大霄
+       "480472604",  #鹰眼看盘
+       "518031546", #财经-沉默的螺旋
+       "1421580803", #九先生笔记
+   ]
+   ```
+
+2. **Cookie配置**：确保`bili_cookies.json`文件中有有效的B站登录cookie
+   ```json
+   [
+     {
+       "name": "SESSDATA",
+       "value": "your_sessdata_value_here"
+     },
+     {
+       "name": "bili_jct",
+       "value": "your_bili_jct_value_here"
+     },
+     {
+       "name": "DedeUserID",
+       "value": "your_user_id_here"
+     }
+   ]
+   ```
+
+3. **DeepSeek API密钥**：确保`deepseek_api_key.txt`文件中的API密钥有效
+   ```
+   sk-your-api-key-here
+   ```
+
+### 使用方法
+1. 安装依赖
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. 配置cookie文件
+   ```bash
+   # 首次运行时会自动打开浏览器进行登录，程序会自动保存cookie
+   # 或手动将有效的B站cookie保存到bili_cookies.json文件中
+   ```
+
 ## 微信公众号文章分析工具 (wechat_get.py)
 
 ### 功能
@@ -196,8 +254,71 @@ sk-your-api-key-here
 
 2. 配置cookie文件
    ```bash
-   # 将有效的微信公众号cookie保存到wechat_cookies.json文件中
+   # 将有效的微信公众号cookie保存到wechat_cookies.txt文件中
    ```
+
+## 主程序 (kol_analyzer.py)
+
+### 功能
+- 协调B站和微信公众号的分析任务
+- 同时运行两个任务以提高效率
+- 合并两个来源的投资建议生成综合分析报告
+- 按日期归档所有分析结果
+
+### 使用方法
+1. 确保所有配置文件已正确设置
+2. 运行主程序
+   ```bash
+   python kol_analyzer.py
+   ```
+
+## 安装和使用流程
+
+### 1. 安装依赖
+```bash
+pip install -r requirements.txt
+```
+
+### 2. 配置文件设置
+1. 设置B站cookie (`bili_cookies.json`)
+2. 设置微信cookie (`wechat_cookies.txt`)
+3. 设置DeepSeek API密钥 (`deepseek_api_key.txt`)
+4. 根据需要调整UP主和公众号列表
+
+### 3. 运行程序
+```bash
+# 运行主程序（推荐）
+python kol_analyzer.py
+
+# 或单独运行B站分析
+python bili_summary.py
+
+# 或单独运行微信分析
+python wechat_get.py
+```
+
+### 4. 查看结果
+程序运行后会在当前目录下创建按日期命名的归档文件夹（如`archive_2024-01-01`），其中包含：
+- B站视频分析结果
+- 微信公众号文章分析结果
+- 综合投资建议报告
+
+## 项目流程说明
+
+根据`procedure.txt`文件描述，项目的工作流程如下：
+
+1. 从B站获取固定几个UP主的当日最新视频，提取字幕，交由DeepSeek分别总结
+2. 获取固定几个公众号的当日最新文章，交由DeepSeek分别总结
+3. 结合持仓信息及联网信息，交由DeepSeek分析后续操作及应对
+4. 让DeepSeek每天输出实盘小技巧
+
+## 注意事项
+
+1. **Cookie有效期**：B站和微信的cookie都有一定有效期，过期后需要重新获取
+2. **API调用限制**：DeepSeek API可能有调用次数和频率限制，请合理使用
+3. **网络环境**：程序需要稳定的网络连接来访问B站、微信和DeepSeek API
+4. **浏览器依赖**：B站视频分析需要Chrome浏览器和对应的ChromeDriver
+5. **数据存储**：程序会生成大量数据文件，请确保有足够的磁盘空间
 
 3. 运行脚本
    ```bash
@@ -336,6 +457,11 @@ extract_content_to_txt('input.json', 'output.txt')
 - `blinker==1.6.2`: 信号处理库
 - `beautifulsoup4>=4.9.3`: HTML解析库
 - `openai`: OpenAI API客户端（用于DeepSeek）
+
+## 计划功能
+- 抓取相关证券近期k线走势数据，加入大模型共同分析，生成针对个股的投资建议
+- 抓取当日涨跌停榜、龙虎榜数据，以及相关新闻，辅助进行龙头及板块方向分析
+
 
 ## 免责声明
 本工具仅用于学习和研究目的，请勿用于商业用途或违反平台规定的行为。

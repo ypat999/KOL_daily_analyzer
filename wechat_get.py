@@ -3,7 +3,7 @@ from datetime import datetime, date
 from tqdm import tqdm
 from deepseek_summary import deepseek_summary
 
-LIMIT_HOURS = 24  # 18小时内的视频
+LIMIT_HOURS = 18  # 18小时内的视频
 
 # 公众号fakeid列表
 account_list = {

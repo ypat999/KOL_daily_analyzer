@@ -36,10 +36,11 @@ BILI_SPACE = "https://space.bilibili.com/"
 BILI_API = "https://api.bilibili.com/x/space/arc/search"
 UP_MIDS = [
             "1609483218",  #江浙陈某
-            "2137589551", #李大霄
+            #"2137589551", #李大霄
             "480472604",  #鹰眼看盘
             "518031546", #财经-沉默的螺旋
             "1421580803", #九先生笔记
+            "515688213", #连板
           ]  # B站UP主用户ID
 COOKIE_PATH = "bili_cookies.json"  # 统一cookie路径配置
 # 工具函数：浏览器初始化（反爬配置集中管理）
@@ -74,9 +75,22 @@ def setup_browser():
 def is_within_18_hours(publish_date: str) -> bool:
     """
     检查发布时间是否在18小时内
-    支持格式：'今天'、'X小时前'、'昨天'、'X天前'等
+    支持格式：'今天'、'X小时前'、'昨天'、'X天前'、'2025-01-01'等
     """
     now = datetime.now()
+    # 处理'YYYY-MM-DD'格式
+    if re.match(r'\d{4}-\d{2}-\d{2}', publish_date):
+        try:
+            # 尝试解析为日期，格式与匹配模式一致
+            video_date = datetime.strptime(publish_date, '%Y-%m-%d')
+            # 计算时间差
+            delta = now - video_date
+            # 转换为小时数判断是否在18小时内
+            hours_diff = delta.total_seconds() / 3600
+            return hours_diff <= LIMIT_HOURS
+        except ValueError:
+            return False
+
     if "分钟" in publish_date:
         return True
     if "今天" in publish_date:
@@ -343,7 +357,7 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3):
     
     return subtitle_results
 
-def run_bili_task(use_api_for_videos: bool = True):
+def run_bili_task(use_api_for_videos: bool = False):
     """运行B站视频分析任务
     
     Args:
