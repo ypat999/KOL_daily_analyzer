@@ -29,7 +29,7 @@ import json
 from extract_subtitle import extract_subtitle_from_url
 from deepseek_summary import deepseek_summary
 
-LIMIT_HOURS = 18  # 18小时内的视频
+LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
 # 全局配置（集中管理）
 BILI_SPACE = "https://space.bilibili.com/"
@@ -71,37 +71,85 @@ def setup_browser():
     driver.set_window_size(800, 600)
     return driver
 
-# 工具函数：检查时间是否在18小时内
-def is_within_18_hours(publish_date: str) -> bool:
+# 工具函数：检查时间是否在限定小时内
+def is_within_limit_hours(publish_date: str) -> bool:
     """
-    检查发布时间是否在18小时内
+    检查发布时间是否在限定小时内
     支持格式：'今天'、'X小时前'、'昨天'、'X天前'、'2025-01-01'等
+    周末运行时，只收录周五收盘后发布的内容
     """
     now = datetime.now()
+    
+    # 检查是否为周末
+    weekday = now.weekday()  # 0=周一, 6=周日
+    is_weekend = weekday >= 5  # 5=周六, 6=周日
+    
     # 处理'YYYY-MM-DD'格式
     if re.match(r'\d{4}-\d{2}-\d{2}', publish_date):
         try:
             # 尝试解析为日期，格式与匹配模式一致
             video_date = datetime.strptime(publish_date, '%Y-%m-%d')
-            # 计算时间差
-            delta = now - video_date
-            # 转换为小时数判断是否在18小时内
-            hours_diff = delta.total_seconds() / 3600
-            return hours_diff <= LIMIT_HOURS
+            
+            # 如果是周末，只收录周五收盘后发布的内容
+            if is_weekend:
+                # 计算最近的周五日期
+                days_since_friday = (weekday - 4) % 7
+                friday_date = now - timedelta(days=days_since_friday)
+                # 设置周五收盘时间为15:00
+                friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
+                # 只收录周五收盘后发布的内容
+                return video_date >= friday_close_time.date()
+            else:
+                # 平时使用18小时限制
+                delta = now - video_date
+                hours_diff = delta.total_seconds() / 3600
+                return hours_diff <= LIMIT_HOURS
         except ValueError:
             return False
 
-    if "分钟" in publish_date:
-        return True
-    if "今天" in publish_date:
-        return True
-    if "小时前" in publish_date:
-        # 提取小时数
-        match = re.search(r'(\d+)小时前', publish_date)
-        if match:
-            hours = int(match.group(1))
-            return hours <= LIMIT_HOURS
-        return True  # 如果无法提取小时数，默认包含
+    # 对于"今天"、"X小时前"等格式
+    if is_weekend:
+        # 周末时，只有今天发布的内容才可能是周五收盘后发布的
+        if "分钟" in publish_date or "今天" in publish_date or "小时前" in publish_date:
+            # 检查是否为周五或周六
+            if weekday == 4:  # 周五
+                # 如果是周五，检查发布时间是否在15:00之后
+                if "小时前" in publish_date:
+                    match = re.search(r'(\d+)小时前', publish_date)
+                    if match:
+                        hours = int(match.group(1))
+                        # 计算发布时间
+                        publish_time = now - timedelta(hours=hours)
+                        # 周五15:00之后发布的内容才收录
+                        friday_close_time = now.replace(hour=15, minute=0, second=0, microsecond=0)
+                        return publish_time >= friday_close_time
+                elif "分钟" in publish_date or "今天" in publish_date:
+                    # 今天发布的内容，检查是否在15:00之后
+                    friday_close_time = now.replace(hour=15, minute=0, second=0, microsecond=0)
+                    return now >= friday_close_time
+                return True
+            elif weekday == 5:  # 周六
+                # 周六运行时，只收录周五15:00后发布的内容
+                # 所以"今天"发布的内容不符合要求
+                return False
+            elif weekday == 6:  # 周日
+                # 周日运行时，只收录周五15:00后发布的内容
+                # 所以"今天"发布的内容不符合要求
+                return False
+        return False
+    else:
+        # 平时的处理逻辑
+        if "分钟" in publish_date:
+            return True
+        if "今天" in publish_date:
+            return True
+        if "小时前" in publish_date:
+            # 提取小时数
+            match = re.search(r'(\d+)小时前', publish_date)
+            if match:
+                hours = int(match.group(1))
+                return hours <= LIMIT_HOURS
+            return True  # 如果无法提取小时数，默认包含
         
     return False
 
@@ -174,19 +222,19 @@ def get_videos_by_selenium(driver, up_id: str):
             date_elem = item.find_element(By.CSS_SELECTOR, '.bili-video-card__subtitle span')
             publish_date = date_elem.text.strip()
             
-            # 检查是否为18小时内的视频
-            if is_within_18_hours(publish_date):
+            # 检查是否为限定小时内的视频（周末只收录周五收盘后发布的内容）
+            if is_within_limit_hours(publish_date):
                 videos.append({"title": title, "url": video_url, "date": publish_date})
-                print(f"已添加18小时内视频: {title} ({publish_date})")
+                print(f"已添加限定时间内视频: {title} ({publish_date})")
             else:
-                print(f"跳过非18小时内视频: {title} ({publish_date})")
+                print(f"跳过非限定时间内视频: {title} ({publish_date})")
         return videos
     except Exception as e:
         print(f'爬取失败：{str(e)}')
         return []
 
 # 多线程版本：获取UP主视频列表
-def get_videos_by_selenium_threaded(up_ids: list, max_workers: int = 10):
+def get_videos_by_selenium_threaded(up_ids: list, max_workers: int = 3):
     """使用多线程并行获取多个UP主的视频列表"""
     all_videos = []
     
@@ -295,7 +343,13 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3):
         """处理单个视频的字幕URL获取"""
         try:
             # 检查字幕文件是否已存在
-            current_date = datetime.now().strftime('%Y-%m-%d')
+            # 如果当前时间未达到当日9点，则使用前一天的日期
+            now = datetime.now()
+            if now.hour < 9:
+                current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            else:
+                current_date = now.strftime('%Y-%m-%d')
+            
             archive_folder = f'archive_{current_date}'
             subtitle_path = os.path.join(archive_folder, f"bili_{video['title']}.txt")
             
@@ -367,7 +421,15 @@ def run_bili_task(use_api_for_videos: bool = False):
     pass  # 多线程处理不需要请求间隔
 
     # 创建按日期命名的归档文件夹
-    current_date = datetime.now().strftime('%Y-%m-%d')
+    # 如果当前时间未达到当日9点，则使用前一天的日期
+    now = datetime.now()
+    if now.hour < 9:
+        current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+        print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {current_date}")
+    else:
+        current_date = now.strftime('%Y-%m-%d')
+        print(f"当前时间为 {now.strftime('%H:%M')}，已达到当日9点，使用当日日期: {current_date}")
+    
     archive_folder = f'archive_{current_date}'
     if not os.path.exists(archive_folder):
         os.makedirs(archive_folder)
@@ -477,7 +539,13 @@ def run_bili_task(use_api_for_videos: bool = False):
     investment_advice = deepseek_summary(
         combined_summary,
         sysprompt="你是一个专业的金融分析师，擅长基于多份市场分析报告给出投资建议。",
-        userprompt="这些是最近一两天的财经博主内容总结，请基于以下所有总结内容，给出未来几天的投资建议：\n\n"
+        userprompt='''"这些是最近一两天的财经博主内容总结，请基于以下所有总结内容，给出未来几天的投资建议,包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略\n4. 风险提示。\n\n请详细分析并以自然文本格式给出专业建议。之后将所有涉及到的股票和指数等标的信息以json格式附加在最后，样例格式如下：
+        {
+            \"股票或指数名称\": [
+                 \"平安银行\",
+                 \"上证指数\"
+            ]
+        }：\n\n'''
     )
 
     # 保存投资建议到归档文件夹
@@ -673,7 +741,13 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3, use_api: bool
         """处理单个视频的字幕URL获取"""
         try:
             # 检查字幕文件是否已存在
-            current_date = datetime.now().strftime('%Y-%m-%d')
+            # 如果当前时间未达到当日9点，则使用前一天的日期
+            now = datetime.now()
+            if now.hour < 9:
+                current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
+            else:
+                current_date = now.strftime('%Y-%m-%d')
+            
             archive_folder = f'archive_{current_date}'
             subtitle_path = os.path.join(archive_folder, f"bili_{video['title']}.txt")
             
@@ -829,8 +903,8 @@ def get_videos_by_api(up_id: str, page: int = 1, page_size: int = 10, max_retrie
                 # 构建视频URL
                 video_url = f"https://www.bilibili.com/video/{bvid}"
                 
-                # 检查是否为18小时内的视频
-                if is_within_18_hours(created_date):
+                # 检查是否为限定小时内的视频（周末只收录周五收盘后发布的内容）
+                if is_within_limit_hours(created_date):
                     videos.append({
                         "title": title,
                         "url": video_url,
@@ -840,11 +914,11 @@ def get_videos_by_api(up_id: str, page: int = 1, page_size: int = 10, max_retrie
                         "play": video_data.get('play', 0),
                         "comment": video_data.get('comment', 0)
                     })
-                    print(f"已添加18小时内视频: {title} ({created_date})")
+                    print(f"已添加限定时间内视频: {title} ({created_date})")
                 else:
-                    print(f"跳过非18小时内视频: {title} ({created_date})")
+                    print(f"跳过非限定时间内视频: {title} ({created_date})")
             
-            print(f"API获取到 {len(videos)} 个18小时内视频")
+            print(f"API获取到 {len(videos)} 个限定时间内视频")
             return videos
             
         except requests.exceptions.RequestException as e:
