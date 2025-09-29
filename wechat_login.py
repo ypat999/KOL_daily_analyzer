@@ -109,7 +109,7 @@ def check_cookie_validity(cookie, token):
         response = requests.get(url, headers=headers, params=params, timeout=10)
         
         # 如果返回登录页面，说明cookie失效
-        if "登录" in response.text and "verify_code" in response.text:
+        if "登录" in response.text or "verify_code" in response.text:
             return False
         return True
     except Exception as e:

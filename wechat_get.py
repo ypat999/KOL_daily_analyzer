@@ -5,8 +5,10 @@ from deepseek_summary import deepseek_summary
 # 导入自动登录模块
 try:
     from wechat_login import update_wechat_cookie, check_cookie_validity
+    HAS_WECHAT_LOGIN = True
 except ImportError:
     print("警告: 未找到wechat_login模块，将无法自动更新微信cookie")
+    HAS_WECHAT_LOGIN = False
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
@@ -55,7 +57,7 @@ def check_and_update_cookie():
     global cookie, token, headers, data
     
     # 检查cookie是否有效
-    if 'check_cookie_validity' in globals():
+    if HAS_WECHAT_LOGIN and 'check_cookie_validity' in globals():
         if not check_cookie_validity(cookie, token):
             print("检测到微信cookie已失效，正在尝试自动更新...")
             
@@ -71,6 +73,18 @@ def check_and_update_cookie():
                 headers["Cookie"] = cookie
                 data["token"] = token
                 
+                # 保存到文件
+                try:
+                    cookie_data = {
+                        "cookie": cookie,
+                        "token": token
+                    }
+                    with open("wechat_cookies.json", "w", encoding="utf-8") as f:
+                        json.dump(cookie_data, f, ensure_ascii=False, indent=4)
+                    print("新的cookie和token已保存到 wechat_cookies.json 文件")
+                except Exception as e:
+                    print(f"保存cookie到文件时出错: {e}")
+                
                 return True
             else:
                 print("微信cookie更新失败，请手动更新wechat_cookies.json文件")
@@ -79,7 +93,11 @@ def check_and_update_cookie():
             print("微信cookie有效")
             return True
     else:
-        print("无法检查cookie有效性（缺少检查函数）")
+        # 如果没有自动登录模块，检查cookie是否为空
+        if not cookie or not token:
+            print("错误: 微信cookie或token为空，请运行微信登录程序或手动更新wechat_cookies.json文件")
+            return False
+        print("无法自动检查cookie有效性（缺少检查函数），请确保cookie有效")
         return True
 
 headers = {
@@ -384,9 +402,21 @@ def save_single_article(account_name, article, content, today):
 
 def save_daily_content(all_content):
     """保存当日所有公众号文章内容"""
-    # 如果当前时间未达到当日9点，则使用前一天的日期
+    # 获取当前时间
     now = datetime.now()
-    if now.hour < 9:
+    weekday = now.weekday()  # 0=周一, 6=周日
+    
+    # 检查是否为周末 (周六或周日)
+    is_weekend = weekday >= 5  # 5=周六, 6=周日
+    
+    if is_weekend:
+        # 如果是周末，使用最近的周五日期
+        days_since_friday = (weekday - 4) % 7
+        friday_date = now - timedelta(days=days_since_friday)
+        today = friday_date.strftime('%Y-%m-%d')
+        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {today}")
+    elif now.hour < 9:
+        # 如果当前时间未达到当日9点，则使用前一天的日期
         today = (now - timedelta(days=1)).strftime('%Y-%m-%d')
         print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {today}")
     else:
@@ -444,9 +474,20 @@ def get_all_accounts_daily_content():
 
 def collect_all_articles_content(today):
     """收集当日所有公众号文章内容"""
-    # 如果当前时间未达到当日9点，则使用前一天的日期
+    # 获取当前时间
     now = datetime.now()
-    if now.hour < 9:
+    weekday = now.weekday()  # 0=周一, 6=周日
+    
+    # 检查是否为周末 (周六或周日)
+    is_weekend = weekday >= 5  # 5=周六, 6=周日
+    
+    if is_weekend:
+        # 如果是周末，使用最近的周五日期
+        days_since_friday = (weekday - 4) % 7
+        friday_date = now - timedelta(days=days_since_friday)
+        archive_date = friday_date.strftime('%Y-%m-%d')
+    elif now.hour < 9:
+        # 如果当前时间未达到当日9点，则使用前一天的日期
         archive_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
     else:
         archive_date = today
@@ -478,9 +519,20 @@ def generate_investment_advice(all_content, today):
     """基于所有文章内容生成投资建议"""
     print("开始生成投资分析建议...")
     
-    # 如果当前时间未达到当日9点，则使用前一天的日期
+    # 获取当前时间
     now = datetime.now()
-    if now.hour < 9:
+    weekday = now.weekday()  # 0=周一, 6=周日
+    
+    # 检查是否为周末 (周六或周日)
+    is_weekend = weekday >= 5  # 5=周六, 6=周日
+    
+    if is_weekend:
+        # 如果是周末，使用最近的周五日期
+        days_since_friday = (weekday - 4) % 7
+        friday_date = now - timedelta(days=days_since_friday)
+        archive_date = friday_date.strftime('%Y-%m-%d')
+    elif now.hour < 9:
+        # 如果当前时间未达到当日9点，则使用前一天的日期
         archive_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
     else:
         archive_date = today
@@ -521,9 +573,21 @@ def run_wechat_task():
     # save_daily_content(all_daily_content)
     
     # 收集所有文章内容并生成投资建议
-    # 如果当前时间未达到当日9点，则使用前一天的日期
+    # 获取当前时间
     now = datetime.now()
-    if now.hour < 9:
+    weekday = now.weekday()  # 0=周一, 6=周日
+    
+    # 检查是否为周末 (周六或周日)
+    is_weekend = weekday >= 5  # 5=周六, 6=周日
+    
+    if is_weekend:
+        # 如果是周末，使用最近的周五日期
+        days_since_friday = (weekday - 4) % 7
+        friday_date = now - timedelta(days=days_since_friday)
+        today = friday_date.strftime('%Y-%m-%d')
+        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {today}")
+    elif now.hour < 9:
+        # 如果当前时间未达到当日9点，则使用前一天的日期
         today = (now - timedelta(days=1)).strftime('%Y-%m-%d')
         print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {today}")
     else:

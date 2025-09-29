@@ -76,7 +76,7 @@ def is_within_limit_hours(publish_date: str) -> bool:
     """
     检查发布时间是否在限定小时内
     支持格式：'今天'、'X小时前'、'昨天'、'X天前'、'2025-01-01'等
-    周末运行时，只收录周五收盘后发布的内容
+    周末运行时，收录周五收盘后所有时间的内容
     """
     now = datetime.now()
     
@@ -90,14 +90,14 @@ def is_within_limit_hours(publish_date: str) -> bool:
             # 尝试解析为日期，格式与匹配模式一致
             video_date = datetime.strptime(publish_date, '%Y-%m-%d')
             
-            # 如果是周末，只收录周五收盘后发布的内容
+            # 如果是周末，收录周五收盘后所有时间的内容
             if is_weekend:
                 # 计算最近的周五日期
                 days_since_friday = (weekday - 4) % 7
                 friday_date = now - timedelta(days=days_since_friday)
                 # 设置周五收盘时间为15:00
                 friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
-                # 只收录周五收盘后发布的内容
+                # 收录周五收盘后所有时间的内容
                 return video_date >= friday_close_time.date()
             else:
                 # 平时使用18小时限制
@@ -109,7 +109,7 @@ def is_within_limit_hours(publish_date: str) -> bool:
 
     # 对于"今天"、"X小时前"等格式
     if is_weekend:
-        # 周末时，只有今天发布的内容才可能是周五收盘后发布的
+        # 周末时，收录周五收盘后所有时间的内容
         if "分钟" in publish_date or "今天" in publish_date or "小时前" in publish_date:
             # 检查是否为周五或周六
             if weekday == 4:  # 周五
@@ -129,13 +129,13 @@ def is_within_limit_hours(publish_date: str) -> bool:
                     return now >= friday_close_time
                 return True
             elif weekday == 5:  # 周六
-                # 周六运行时，只收录周五15:00后发布的内容
-                # 所以"今天"发布的内容不符合要求
-                return False
+                # 周六运行时，收录周五15:00后所有时间的内容
+                # 所以"今天"发布的内容符合要求
+                return True
             elif weekday == 6:  # 周日
-                # 周日运行时，只收录周五15:00后发布的内容
-                # 所以"今天"发布的内容不符合要求
-                return False
+                # 周日运行时，收录周五15:00后所有时间的内容
+                # 所以"今天"发布的内容符合要求
+                return True
         return False
     else:
         # 平时的处理逻辑
@@ -343,9 +343,20 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3):
         """处理单个视频的字幕URL获取"""
         try:
             # 检查字幕文件是否已存在
-            # 如果当前时间未达到当日9点，则使用前一天的日期
+            # 获取当前时间
             now = datetime.now()
-            if now.hour < 9:
+            weekday = now.weekday()  # 0=周一, 6=周日
+            
+            # 检查是否为周末 (周六或周日)
+            is_weekend = weekday >= 5  # 5=周六, 6=周日
+            
+            if is_weekend:
+                # 计算最近的周五日期
+                days_since_friday = (weekday - 4) % 7
+                friday_date = now - timedelta(days=days_since_friday)
+                current_date = friday_date.strftime('%Y-%m-%d')
+            elif now.hour < 9:
+                # 如果当前时间未达到当日9点，则使用前一天的日期
                 current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
             else:
                 current_date = now.strftime('%Y-%m-%d')
@@ -421,9 +432,21 @@ def run_bili_task(use_api_for_videos: bool = False):
     pass  # 多线程处理不需要请求间隔
 
     # 创建按日期命名的归档文件夹
-    # 如果当前时间未达到当日9点，则使用前一天的日期
+    # 获取当前时间
     now = datetime.now()
-    if now.hour < 9:
+    weekday = now.weekday()  # 0=周一, 6=周日
+    
+    # 检查是否为周末 (周六或周日)
+    is_weekend = weekday >= 5  # 5=周六, 6=周日
+    
+    if is_weekend:
+        # 计算最近的周五日期
+        days_since_friday = (weekday - 4) % 7
+        friday_date = now - timedelta(days=days_since_friday)
+        current_date = friday_date.strftime('%Y-%m-%d')
+        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {current_date}")
+    elif now.hour < 9:
+        # 如果当前时间未达到当日9点，则使用前一天的日期
         current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
         print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {current_date}")
     else:
@@ -446,7 +469,7 @@ def run_bili_task(use_api_for_videos: bool = False):
         all_videos = get_videos_by_api_threaded(UP_MIDS, max_workers=1)
     else:
         print("使用浏览器方式获取视频列表")
-        all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=5)
+        all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=3)
     
     print(f"总共获取到 {len(all_videos)} 个视频")
     
@@ -741,9 +764,20 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3, use_api: bool
         """处理单个视频的字幕URL获取"""
         try:
             # 检查字幕文件是否已存在
-            # 如果当前时间未达到当日9点，则使用前一天的日期
+            # 获取当前时间
             now = datetime.now()
-            if now.hour < 9:
+            weekday = now.weekday()  # 0=周一, 6=周日
+            
+            # 检查是否为周末 (周六或周日)
+            is_weekend = weekday >= 5  # 5=周六, 6=周日
+            
+            if is_weekend:
+                # 计算最近的周五日期
+                days_since_friday = (weekday - 4) % 7
+                friday_date = now - timedelta(days=days_since_friday)
+                current_date = friday_date.strftime('%Y-%m-%d')
+            elif now.hour < 9:
+                # 如果当前时间未达到当日9点，则使用前一天的日期
                 current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
             else:
                 current_date = now.strftime('%Y-%m-%d')
