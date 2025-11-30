@@ -1,6 +1,7 @@
 import concurrent.futures
 import os
 from datetime import datetime, timedelta
+from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from bili_summary import run_bili_task
 from wechat_get import run_wechat_task
 from deepseek_summary import deepseek_summary
@@ -9,35 +10,12 @@ class KOLAnalyzer:
     """KOL分析器主类，用于同时执行B站和微信任务并合并投资建议"""
     
     def __init__(self):
-        # 获取当前时间
-        now = datetime.now()
-        weekday = now.weekday()  # 0=周一, 6=周日
-        
-        # 检查是否为周末 (周六或周日)
-        is_weekend = weekday >= 5  # 5=周六, 6=周日
-        
-        if is_weekend:
-            # 计算最近的周五日期
-            days_since_friday = (weekday - 4) % 7
-            friday_date = now - timedelta(days=days_since_friday)
-            self.current_date = friday_date.strftime('%Y-%m-%d')
-            print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {self.current_date}")
-        else:
-            # 平日使用当前日期，但如果过了9点则使用当前日期，否则使用前一天日期
-            if now.hour >= 9:
-                self.current_date = now.strftime('%Y-%m-%d')
-                print(f"当前时间为 {now.strftime('%H:%M')}，已达到当日9点，使用当日日期: {self.current_date}")
-            else:
-                yesterday = now - timedelta(days=1)
-                self.current_date = yesterday.strftime('%Y-%m-%d')
-                print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {self.current_date}")
-        
-        self.archive_folder = f'archive_{self.current_date}'
+        # 使用统一的日期工具获取当前分析日期
+        self.current_date, date_reason, self.archive_folder = get_current_analysis_date()
+        print_date_info()
         
         # 确保归档文件夹存在
-        if not os.path.exists(self.archive_folder):
-            os.makedirs(self.archive_folder)
-            print(f"已创建日期归档文件夹: {self.archive_folder}")
+        ensure_archive_folder(self.archive_folder)
     
     def run_bili_task(self):
         """运行B站视频分析任务"""

@@ -2,6 +2,13 @@ import requests, math, time, random, json, os, re
 from datetime import datetime, date, timedelta
 from tqdm import tqdm
 from deepseek_summary import deepseek_summary
+
+# 从date_utils导入日期处理函数
+try:
+    from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
+except ImportError:
+    # 如果导入失败，定义本地版本（已废弃，使用date_utils模块）
+    pass
 # 导入自动登录模块
 try:
     from wechat_login import update_wechat_cookie, check_cookie_validity
@@ -145,9 +152,8 @@ def is_today_article(article):
             is_weekend = weekday >= 5  # 5=周六, 6=周日
             
             if is_weekend:
-                # 计算最近的周五日期
-                days_since_friday = (weekday - 4) % 7
-                friday_date = now - timedelta(days=days_since_friday)
+                # 使用date_utils模块的函数计算最近的周五日期
+                friday_date = get_friday_date_for_weekend(now)
                 # 设置周五收盘时间为15:00
                 friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
                 # 只收录周五收盘后发布的内容
@@ -172,26 +178,10 @@ def get_content_list(fakeid, account_name, per_page=5):
     count = get_total_count(fakeid)
     page = int(math.ceil(count / per_page))
     content_list = []
-    # 获取当前时间
-    now = datetime.now()
     
-    # 检查是否为周末
-    weekday = now.weekday()  # 0=周一, 6=周日
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        today = friday_date.strftime('%Y-%m-%d')
-        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {today}")
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        today = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {today}")
-    else:
-        today = now.strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，已达到当日9点，使用当日日期: {today}")
+    # 使用统一的日期工具获取当前分析日期
+    today, date_reason, archive_folder = get_current_analysis_date()
+    print_date_info()
     
     print(f"开始获取公众号 '{account_name}' 的文章列表...")
     
@@ -319,26 +309,9 @@ def get_article_content(article_url, title):
 
 def is_article_saved(account_name, title, today):
     """检查文章是否已经保存过"""
-    # 获取当前时间
-    now = datetime.now()
-    
-    # 检查是否为周末
-    weekday = now.weekday()  # 0=周一, 6=周日
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        archive_date = friday_date.strftime('%Y-%m-%d')
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        archive_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-    else:
-        archive_date = today
-    
-    archive_dir = f"archive_{archive_date}"
-    account_filename = f"{archive_dir}/wechat_{account_name}_{archive_date}.txt"
+    # 确保使用传入的today参数作为归档目录名
+    archive_dir = f"archive_{today}"
+    account_filename = f"{archive_dir}/wechat_{account_name}_{today}.txt"
     
     if not os.path.exists(account_filename):
         return False
@@ -355,26 +328,8 @@ def is_article_saved(account_name, title, today):
 
 def save_single_article(account_name, article, content, today):
     """保存单篇文章内容"""
-    # 获取当前时间
-    now = datetime.now()
-    
-    # 检查是否为周末
-    weekday = now.weekday()  # 0=周一, 6=周日
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        archive_date = friday_date.strftime('%Y-%m-%d')
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        archive_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-    else:
-        archive_date = today
-    
-    # 创建存档目录
-    archive_dir = f"archive_{archive_date}"
+    # 确保使用传入的today参数作为归档目录名
+    archive_dir = f"archive_{today}"
     if not os.path.exists(archive_dir):
         os.makedirs(archive_dir)
     
@@ -402,26 +357,10 @@ def save_single_article(account_name, article, content, today):
 
 def save_daily_content(all_content):
     """保存当日所有公众号文章内容"""
-    # 获取当前时间
-    now = datetime.now()
-    weekday = now.weekday()  # 0=周一, 6=周日
+    # 使用统一的日期工具获取当前分析日期
+    today, date_reason, archive_folder = get_current_analysis_date()
+    print_date_info()
     
-    # 检查是否为周末 (周六或周日)
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        today = friday_date.strftime('%Y-%m-%d')
-        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {today}")
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        today = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {today}")
-    else:
-        today = now.strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，已达到当日9点，使用当日日期: {today}")
     filename = f"daily_content_{today}.json"
     
     # 保存完整内容（仅包含文章列表信息）
@@ -474,25 +413,8 @@ def get_all_accounts_daily_content():
 
 def collect_all_articles_content(today):
     """收集当日所有公众号文章内容"""
-    # 获取当前时间
-    now = datetime.now()
-    weekday = now.weekday()  # 0=周一, 6=周日
-    
-    # 检查是否为周末 (周六或周日)
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        archive_date = friday_date.strftime('%Y-%m-%d')
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        archive_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-    else:
-        archive_date = today
-    
-    archive_dir = f"archive_{archive_date}"
+    # 确保使用传入的today参数作为归档目录名
+    archive_dir = f"archive_{today}"
     all_articles_content = []
     
     if not os.path.exists(archive_dir):
@@ -519,23 +441,8 @@ def generate_investment_advice(all_content, today):
     """基于所有文章内容生成投资建议"""
     print("开始生成投资分析建议...")
     
-    # 获取当前时间
-    now = datetime.now()
-    weekday = now.weekday()  # 0=周一, 6=周日
-    
-    # 检查是否为周末 (周六或周日)
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        archive_date = friday_date.strftime('%Y-%m-%d')
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        archive_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-    else:
-        archive_date = today
+    # 确保使用传入的today参数作为归档目录名
+    archive_dir = f"archive_{today}"
     
     # 调用deepseek进行投资分析
     investment_advice = deepseek_summary(
@@ -550,8 +457,7 @@ def generate_investment_advice(all_content, today):
         }：\n\n'''
     )
     
-    # 保存投资建议
-    archive_dir = f"archive_{archive_date}"
+    # 确保归档目录存在
     if not os.path.exists(archive_dir):
         os.makedirs(archive_dir)
     
@@ -572,27 +478,10 @@ def run_wechat_task():
     all_daily_content = get_all_accounts_daily_content()
     # save_daily_content(all_daily_content)
     
-    # 收集所有文章内容并生成投资建议
-    # 获取当前时间
-    now = datetime.now()
-    weekday = now.weekday()  # 0=周一, 6=周日
+    # 使用统一的日期工具获取当前分析日期
+    today, date_reason, archive_folder = get_current_analysis_date()
+    print_date_info()
     
-    # 检查是否为周末 (周六或周日)
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 如果是周末，使用最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        today = friday_date.strftime('%Y-%m-%d')
-        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {today}")
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        today = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {today}")
-    else:
-        today = now.strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，已达到当日9点，使用当日日期: {today}")
     print("\n收集所有文章内容...")
     all_articles_content = collect_all_articles_content(today)
     

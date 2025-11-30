@@ -25,9 +25,9 @@ import tempfile
 import os
 import json
 
-
 from extract_subtitle import extract_subtitle_from_url
 from deepseek_summary import deepseek_summary
+from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
@@ -72,33 +72,49 @@ def setup_browser():
     return driver
 
 # 工具函数：检查时间是否在限定小时内
+
 def is_within_limit_hours(publish_date: str) -> bool:
     """
     检查发布时间是否在限定小时内
     支持格式：'今天'、'X小时前'、'昨天'、'X天前'、'2025-01-01'等
     周末运行时，收录周五收盘后所有时间的内容
+    周一早上9点前也使用周末逻辑（因为还未开盘）
     """
     now = datetime.now()
     
-    # 检查是否为周末
+    # 检查是否为周末 (周六或周日) 或周一早上9点前
     weekday = now.weekday()  # 0=周一, 6=周日
     is_weekend = weekday >= 5  # 5=周六, 6=周日
     
-    # 处理'YYYY-MM-DD'格式
-    if re.match(r'\d{4}-\d{2}-\d{2}', publish_date):
+    # 周一早上9点前也使用周末逻辑
+    is_monday_early = weekday == 0 and now.hour < 9  # 周一且9点前
+    is_weekend_period = is_weekend or is_monday_early
+    
+    # 处理日期格式：'YYYY-MM-DD' 或 'MM-DD' 或 'M-D'
+    date_match = re.match(r'(\d{4}-)?(\d{1,2}-\d{1,2})', publish_date)
+    if date_match:
         try:
-            # 尝试解析为日期，格式与匹配模式一致
-            video_date = datetime.strptime(publish_date, '%Y-%m-%d')
+            date_part = date_match.group(2)  # 获取MM-DD部分
             
-            # 如果是周末，收录周五收盘后所有时间的内容
-            if is_weekend:
-                # 计算最近的周五日期
-                days_since_friday = (weekday - 4) % 7
-                friday_date = now - timedelta(days=days_since_friday)
-                # 设置周五收盘时间为15:00
+            # 如果有年份，直接使用；如果没有，使用当前年份
+            if date_match.group(1):
+                full_date_str = f"{date_match.group(1)}{date_part}"
+                video_date = datetime.strptime(full_date_str, '%Y-%m-%d')
+            else:
+                # 只有月日，使用当前年份
+                current_year = now.year
+                full_date_str = f"{current_year}-{date_part}"
+                video_date = datetime.strptime(full_date_str, '%Y-%m-%d')
+                
+                # 如果解析出的日期在未来，说明是去年的（比如1月1日刚过时）
+                if video_date > now:
+                    video_date = video_date.replace(year=current_year - 1)
+            
+            # 周末逻辑：收录周五收盘后所有内容
+            if is_weekend_period:
+                friday_date = get_friday_date_for_weekend(now)
                 friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
-                # 收录周五收盘后所有时间的内容
-                return video_date >= friday_close_time.date()
+                return video_date.date() >= friday_close_time.date()
             else:
                 # 平时使用18小时限制
                 delta = now - video_date
@@ -107,51 +123,58 @@ def is_within_limit_hours(publish_date: str) -> bool:
         except ValueError:
             return False
 
-    # 对于"今天"、"X小时前"等格式
-    if is_weekend:
-        # 周末时，收录周五收盘后所有时间的内容
-        if "分钟" in publish_date or "今天" in publish_date or "小时前" in publish_date:
-            # 检查是否为周五或周六
-            if weekday == 4:  # 周五
-                # 如果是周五，检查发布时间是否在15:00之后
-                if "小时前" in publish_date:
-                    match = re.search(r'(\d+)小时前', publish_date)
-                    if match:
-                        hours = int(match.group(1))
-                        # 计算发布时间
-                        publish_time = now - timedelta(hours=hours)
-                        # 周五15:00之后发布的内容才收录
-                        friday_close_time = now.replace(hour=15, minute=0, second=0, microsecond=0)
-                        return publish_time >= friday_close_time
-                elif "分钟" in publish_date or "今天" in publish_date:
-                    # 今天发布的内容，检查是否在15:00之后
-                    friday_close_time = now.replace(hour=15, minute=0, second=0, microsecond=0)
-                    return now >= friday_close_time
-                return True
-            elif weekday == 5:  # 周六
-                # 周六运行时，收录周五15:00后所有时间的内容
-                # 所以"今天"发布的内容符合要求
-                return True
-            elif weekday == 6:  # 周日
-                # 周日运行时，收录周五15:00后所有时间的内容
-                # 所以"今天"发布的内容符合要求
-                return True
-        return False
+    # 处理相对时间格式（今天、X小时前、X分钟前等）
+    if is_weekend_period:
+        # 周末时，收录周五15:00后发布的所有内容
+        friday_close_time = now.replace(hour=15, minute=0, second=0, microsecond=0)
+        
+        if "分钟" in publish_date or "今天" in publish_date:
+            # "今天"或"X分钟前"发布的内容，检查当前时间是否已过周五15:00
+            return now >= friday_close_time
+            
+        if "小时前" in publish_date:
+            match = re.search(r'(\d+)小时前', publish_date)
+            if match:
+                hours = int(match.group(1))
+                publish_time = now - timedelta(hours=hours)
+                return publish_time >= friday_close_time
+            return True  # 无法解析时默认包含
+            
+        if "昨天" in publish_date:
+            # "昨天"的内容在周末总是包含（因为昨天是周五或周六）
+            return True
+            
+        if "天前" in publish_date:
+            match = re.search(r'(\d+)天前', publish_date)
+            if match:
+                days = int(match.group(1))
+                # 周末时，1-2天前的内容也包含（可能是周五或周四）
+                return days <= 2  # 包含最多2天前的内容
+            return True
+            
+        return True  # 其他情况默认包含
     else:
-        # 平时的处理逻辑
+        # 平时的处理逻辑（周一至周五）
         if "分钟" in publish_date:
             return True
         if "今天" in publish_date:
             return True
         if "小时前" in publish_date:
-            # 提取小时数
             match = re.search(r'(\d+)小时前', publish_date)
             if match:
                 hours = int(match.group(1))
                 return hours <= LIMIT_HOURS
             return True  # 如果无法提取小时数，默认包含
-        
-    return False
+        if "昨天" in publish_date:
+            return True  # 昨天的内容总是包含
+        if "天前" in publish_date:
+            match = re.search(r'(\d+)天前', publish_date)
+            if match:
+                days = int(match.group(1))
+                return days <= 1  # 平时只包含昨天和今天的内容
+            return False
+            
+    return False  # 默认不包含
 
 # 工具函数：登录与cookie管理（提前到主流程前定义）
 def login_and_save_cookie(driver) -> bool:
@@ -411,15 +434,25 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3):
         future_to_video = {executor.submit(process_video, video): video for video in videos}
         
         # 收集结果
-        for future in concurrent.futures.as_completed(future_to_video):
+        completed_count = 0
+        total_count = len(videos)
+        
+        for future in concurrent.futures.as_completed(future_to_video, timeout=3600):  # 1小时总超时
             video = future_to_video[future]
             try:
-                result = future.result()
+                result = future.result(timeout=600)  # 单个任务10分钟超时
                 if result:
                     subtitle_results.append(result)
+                completed_count += 1
+                print(f"进度: {completed_count}/{total_count} 视频处理完成")
+            except concurrent.futures.TimeoutError:
+                print(f"视频《{video['title']}》处理超时，跳过")
             except Exception as e:
                 print(f"视频《{video['title']}》处理异常：{str(e)}")
+                completed_count += 1
+                print(f"进度: {completed_count}/{total_count} 视频处理完成")
     
+    print(f"字幕URL获取完成，成功获取 {len(subtitle_results)}/{total_count} 个视频的字幕")
     return subtitle_results
 
 def run_bili_task(use_api_for_videos: bool = False):
@@ -431,34 +464,12 @@ def run_bili_task(use_api_for_videos: bool = False):
     # 配置参数
     pass  # 多线程处理不需要请求间隔
 
-    # 创建按日期命名的归档文件夹
-    # 获取当前时间
-    now = datetime.now()
-    weekday = now.weekday()  # 0=周一, 6=周日
+    # 使用统一的日期工具获取当前分析日期
+    current_date, date_reason, archive_folder = get_current_analysis_date()
+    print_date_info()
     
-    # 检查是否为周末 (周六或周日)
-    is_weekend = weekday >= 5  # 5=周六, 6=周日
-    
-    if is_weekend:
-        # 计算最近的周五日期
-        days_since_friday = (weekday - 4) % 7
-        friday_date = now - timedelta(days=days_since_friday)
-        current_date = friday_date.strftime('%Y-%m-%d')
-        print(f"当前时间为周末({now.strftime('%Y-%m-%d %H:%M')})，使用最近周五日期: {current_date}")
-    elif now.hour < 9:
-        # 如果当前时间未达到当日9点，则使用前一天的日期
-        current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，未达到当日9点，使用前一天日期: {current_date}")
-    else:
-        current_date = now.strftime('%Y-%m-%d')
-        print(f"当前时间为 {now.strftime('%H:%M')}，已达到当日9点，使用当日日期: {current_date}")
-    
-    archive_folder = f'archive_{current_date}'
-    if not os.path.exists(archive_folder):
-        os.makedirs(archive_folder)
-        print(f"已创建日期归档文件夹: {archive_folder}")
-    else:
-        print(f"日期归档文件夹已存在: {archive_folder}")
+    # 确保归档文件夹存在
+    ensure_archive_folder(archive_folder)
 
     
     # 使用多线程并行获取所有UP主的视频列表
@@ -469,7 +480,7 @@ def run_bili_task(use_api_for_videos: bool = False):
         all_videos = get_videos_by_api_threaded(UP_MIDS, max_workers=1)
     else:
         print("使用浏览器方式获取视频列表")
-        all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=3)
+        all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=2)
     
     print(f"总共获取到 {len(all_videos)} 个视频")
     
@@ -812,18 +823,24 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3, use_api: bool
                     }
                 else:
                     print(f"视频《{video['title']}》API方式无字幕，尝试使用ytdlp+whisper方式")
-                    # API方式失败时回退到浏览器方式
-                    return generate_subtitle_with_ytdlp_whisper(bvid, video)
+                    # API方式失败时回退到yt-dlp+whisper方式
+                    return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
             else:
                 # 使用浏览器方式获取字幕URL
-                return get_subtitle_url_browser_fallback(bvid, video)
+                return get_subtitle_url_browser_fallback(bvid, video, archive_folder)
                 
         except Exception as e:
             print(f"视频《{video['title']}》字幕URL获取失败：{str(e)}")
             return None
     
-    def get_subtitle_url_browser_fallback(bvid, video):
-        """浏览器方式获取字幕URL（备用方案）"""
+    def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str = None):
+        """浏览器方式获取字幕URL（备用方案）
+        
+        Args:
+            bvid: 视频BV号
+            video: 视频信息字典
+            archive_folder: 归档文件夹路径
+        """
         try:
             # 创建独立的浏览器实例
             driver = setup_browser()
@@ -1033,7 +1050,6 @@ def download_video_with_ytdlp(video_url: str, output_dir: str) -> str:
         # 构建yt-dlp命令
         cmd = [
             'yt-dlp',
-            '--ffmpeg-location', "D:\Program Files\MediaCoder\codecs64",
             '-x',  # 提取音频
             '--audio-format', 'wav',  # 转换为wav格式
             '--audio-quality', '0',  # 最高质量
@@ -1041,11 +1057,38 @@ def download_video_with_ytdlp(video_url: str, output_dir: str) -> str:
             video_url
         ]
         
+        # 尝试检测ffmpeg位置，如果失败则不指定路径
+        try:
+            import shutil
+            if shutil.which('ffmpeg'):
+                # ffmpeg在系统PATH中，无需额外配置
+                pass
+            else:
+                # 尝试常见路径
+                common_ffmpeg_paths = [
+                    "D:\\Program Files\\MediaCoder\\codecs64\\ffmpeg.exe",
+                    "C:\\ffmpeg\\bin\\ffmpeg.exe",
+                    "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe"
+                ]
+                for ffmpeg_path in common_ffmpeg_paths:
+                    if os.path.exists(ffmpeg_path):
+                        cmd.insert(1, '--ffmpeg-location')
+                        cmd.insert(2, os.path.dirname(ffmpeg_path))
+                        break
+        except:
+            pass
+        
         print(f"开始下载音频: {video_url}")
+        print(f"yt-dlp命令: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30分钟超时
         
+        print(f"yt-dlp返回码: {result.returncode}")
+        print(f"yt-dlp标准输出: {result.stdout[:500]}")  # 只显示前500字符避免日志过长
+        if result.stderr:
+            print(f"yt-dlp错误输出: {result.stderr[:500]}")
+        
         if result.returncode != 0:
-            print(f"yt-dlp下载失败: {result.stderr}")
+            print(f"yt-dlp下载失败，返回码: {result.returncode}")
             return None
         
         # 解析输出获取文件路径
@@ -1142,51 +1185,147 @@ def format_time(seconds: float) -> str:
     seconds = seconds % 60
     return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".replace('.', ',')
 
-def generate_subtitle_with_ytdlp_whisper(bvid: str, video: dict) -> dict:
+def extract_text_from_srt(srt_content: str) -> str:
+    """从SRT字幕内容中提取纯文本，去除时间标签等无关元素
+    
+    Args:
+        srt_content: SRT格式的字幕内容
+        
+    Returns:
+        str: 提取的纯文本内容
+    """
+    lines = srt_content.strip().split('\n')
+    text_lines = []
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # 跳过空行
+        if not line:
+            i += 1
+            continue
+            
+        # 跳过序号行（纯数字）
+        if line.isdigit():
+            i += 1
+            continue
+            
+        # 跳过时间标签行（包含 -->）
+        if '-->' in line:
+            i += 1
+            continue
+            
+        # 添加文本内容
+        if line:
+            text_lines.append(line)
+            
+        i += 1
+    
+    # 用换行符连接所有文本行
+    return '\n'.join(text_lines)
+
+def generate_subtitle_with_ytdlp_whisper(bvid: str, video: dict, archive_folder: str) -> dict:
     """使用yt-dlp+faster-whisper方式生成字幕
     
     Args:
         bvid: 视频BV号
         video: 视频信息字典
+        archive_folder: 归档文件夹路径
         
     Returns:
         dict: 包含视频和字幕URL的信息
     """
     try:
-        # 创建临时目录
-        with tempfile.TemporaryDirectory() as temp_dir:
-            print(f"视频《{video['title']}》使用yt-dlp+whisper方式生成字幕")
+        print(f"视频《{video['title']}》使用yt-dlp+whisper方式生成字幕")
+        
+        # 直接使用归档文件夹，不再使用临时目录
+        audio_filename = f"bili_{video['title']}.wav"
+        # 清理文件名中的非法字符
+        audio_filename = "".join(c for c in audio_filename if c.isalnum() or c in (' ', '-', '_', '.')).rstrip()
+        audio_path = os.path.join(archive_folder, audio_filename)
+        
+        # 下载音频到归档文件夹
+        audio_path = download_video_with_ytdlp(video['url'], archive_folder)
+        if not audio_path or not os.path.exists(audio_path):
+            print(f"音频下载失败: {video['title']}")
+            return None
+        
+        print(f"音频文件已保存到: {audio_path}")
+        
+        # 语音识别生成字幕
+        srt_path = transcribe_audio_with_whisper(audio_path, archive_folder)
+        if not srt_path or not os.path.exists(srt_path):
+            print(f"字幕生成失败: {video['title']}")
+            # 删除音频文件
+            try:
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+                    print(f"已删除音频文件: {audio_path}")
+            except Exception as delete_error:
+                print(f"删除音频文件失败: {delete_error}")
+            return None
+        
+        # 读取字幕内容
+        with open(srt_path, 'r', encoding='utf-8') as f:
+            srt_content = f.read()
+        
+        # 提取纯文本内容，去除时间标签等无关元素
+        subtitle_content = extract_text_from_srt(srt_content)
+        
+        print(f"字幕文件已保存到: {srt_path}")
+        
+        # 删除SRT文件（已提取内容，不再需要）
+        try:
+            if os.path.exists(srt_path):
+                os.remove(srt_path)
+                print(f"已删除SRT字幕文件: {srt_path}")
+        except Exception as delete_error:
+            print(f"删除SRT字幕文件失败: {delete_error}")
+        
+        # 清理GPU内存（如果使用GPU）
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                print("已清理GPU内存缓存")
+        except:
+            pass
+        
+        # 删除音频文件，保留字幕文件
+        try:
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+                print(f"处理完成，已删除音频文件: {audio_path}")
+        except Exception as delete_error:
+            print(f"删除音频文件失败: {delete_error}")
             
-            # 下载音频
-            audio_path = download_video_with_ytdlp(video['url'], temp_dir)
-            if not audio_path or not os.path.exists(audio_path):
-                print(f"音频下载失败: {video['title']}")
-                return None
-            
-            # 语音识别生成字幕
-            srt_path = transcribe_audio_with_whisper(audio_path, temp_dir)
-            if not srt_path or not os.path.exists(srt_path):
-                print(f"字幕生成失败: {video['title']}")
-                return None
-            
-            # 读取字幕内容
-            with open(srt_path, 'r', encoding='utf-8') as f:
-                subtitle_content = f.read()
-            
-            # 返回结果（这里返回字幕内容而不是URL，因为是通过语音识别生成的）
-            return {
-                'video': video,
-                'subtitle_content': subtitle_content,
-                'subtitle_type': 'whisper_generated'
-            }
+        # 返回结果（这里返回字幕内容而不是URL，因为是通过语音识别生成的）
+        return {
+            'video': video,
+            'subtitle_content': subtitle_content,
+            'subtitle_type': 'whisper_generated'
+        }
             
     except Exception as e:
         print(f"yt-dlp+whisper字幕生成异常: {e}")
+        # 确保在异常情况下也尝试删除音频文件
+        try:
+            if 'audio_path' in locals() and os.path.exists(audio_path):
+                os.remove(audio_path)
+                print(f"异常处理中已删除音频文件: {audio_path}")
+        except Exception as cleanup_error:
+            print(f"异常清理音频文件失败: {cleanup_error}")
         return None
 
-def get_subtitle_url_browser_fallback(bvid, video):
+def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str = None):
     """浏览器方式获取字幕URL（备用方案）
     如果浏览器方式也失败，则使用yt-dlp+whisper方式生成字幕
+    
+    Args:
+        bvid: 视频BV号
+        video: 视频信息字典
+        archive_folder: 归档文件夹路径
     """
     try:
         # 创建独立的浏览器实例
@@ -1197,7 +1336,7 @@ def get_subtitle_url_browser_fallback(bvid, video):
             print(f"视频 {video['title']} 登录失败")
             driver.quit()
             # 登录失败时尝试使用yt-dlp+whisper方式
-            return generate_subtitle_with_ytdlp_whisper(bvid, video)
+            return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
         
         subtitle_url = get_subtitle_url(bvid, driver)
         driver.quit()
@@ -1211,11 +1350,11 @@ def get_subtitle_url_browser_fallback(bvid, video):
         else:
             print(f"视频《{video['title']}》无字幕，尝试yt-dlp+whisper方式")
             # 浏览器方式无字幕时使用yt-dlp+whisper方式
-            return generate_subtitle_with_ytdlp_whisper(bvid, video)
+            return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
     except Exception as e:
         print(f"视频《{video['title']}》浏览器方式获取字幕失败：{str(e)}，尝试yt-dlp+whisper方式")
         # 浏览器方式失败时使用yt-dlp+whisper方式
-        return generate_subtitle_with_ytdlp_whisper(bvid, video)
+        return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
 
 if __name__ == "__main__":
     run_bili_task(use_api_for_videos=False)
