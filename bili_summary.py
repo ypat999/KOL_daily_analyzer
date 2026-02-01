@@ -1128,6 +1128,14 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
         str: 生成的字幕文件路径
     """
     try:
+        # 生成SRT字幕路径
+        srt_path = os.path.join(output_dir, os.path.basename(audio_path).replace('.wav', '.srt'))
+        
+        # 检查字幕文件是否已存在
+        if os.path.exists(srt_path):
+            print(f"字幕文件已存在，跳过生成: {srt_path}")
+            return srt_path
+        
         # 检查是否安装了faster-whisper
         try:
             from faster_whisper import WhisperModel
@@ -1157,9 +1165,6 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
         
         print(f"开始语音识别: {audio_path}")
         segments, info = model.transcribe(audio_path, beam_size=5, language="zh")
-        
-        # 生成SRT字幕
-        srt_path = os.path.join(output_dir, os.path.basename(audio_path).replace('.wav', '.srt'))
         
         with open(srt_path, 'w', encoding='utf-8') as f:
             for i, segment in enumerate(segments, 1):
