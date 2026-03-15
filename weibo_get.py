@@ -41,10 +41,89 @@ def setup_browser():
     driver.set_window_size(1000, 800)
     return driver
 
-def login_and_save_cookie(driver):
-    """登录微博并保存cookie"""
+def check_weibo_cookie_validity(driver):
+    """检测微博cookie是否有效
+    
+    通过检查当前页面是否显示登录状态来判断cookie有效性
+    需要在加载cookie并刷新页面后调用
+    
+    Args:
+        driver: Selenium WebDriver实例（已加载cookie并刷新）
+    
+    Returns:
+        bool: cookie是否有效
+    """
     try:
-        # 加载已保存的cookie
+        time.sleep(3)
+        
+        current_url = driver.current_url
+        page_source = driver.page_source
+        
+        login_indicators = [
+            "passport-login",
+            "请登录",
+            "sign-in",
+            "login-form",
+            "请先登录",
+            "重新登录"
+        ]
+        
+        for indicator in login_indicators:
+            if indicator in page_source.lower() or indicator in page_source:
+                print(f"检测到微博cookie已失效（发现登录指示器: {indicator}）")
+                return False
+        
+        logged_in_indicators = [
+            ('[class*="avatar"]', '头像'),
+            ('[class*="user-info"]', '用户信息'),
+            ('[class*="nickname"]', '昵称'),
+            ('[class*="username"]', '用户名'),
+            ('[class*="profile"]', '个人资料'),
+            ('.woo-avatar-img', '微博头像'),
+            ('[class*="Card-user"]', '用户卡片'),
+        ]
+        
+        found_indicators = []
+        for selector, name in logged_in_indicators:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements and len(elements) > 0:
+                    found_indicators.append(name)
+            except:
+                pass
+        
+        if found_indicators:
+            print(f"微博cookie有效（检测到登录元素: {', '.join(found_indicators)}）")
+            return True
+        
+        if "weibo.com/login" in current_url.lower() or "passport.weibo.com" in current_url.lower():
+            print("检测到微博cookie已失效（跳转到登录页）")
+            return False
+        
+        try:
+            page_text = driver.find_element(By.TAG_NAME, 'body').text
+            if "登录" in page_text[:500]:
+                login_count = page_text.count("登录")
+                if login_count > 2:
+                    print(f"检测到微博cookie可能失效（登录字样出现{login_count}次）")
+                    return False
+        except:
+            pass
+        
+        print("微博cookie状态未知，假设有效")
+        return True
+        
+    except Exception as e:
+        print(f"检测cookie有效性时出错: {str(e)}")
+        return False
+
+def login_and_save_cookie(driver):
+    """登录微博并保存cookie
+    
+    优先加载已保存的cookie，并检测其有效性。
+    如果cookie无效或不存在，则提示用户手动登录。
+    """
+    try:
         if os.path.exists(WEIBO_COOKIE_PATH):
             driver.get(WEIBO_URL)
             time.sleep(2)
@@ -53,10 +132,17 @@ def login_and_save_cookie(driver):
                     cookies = json.loads(f.read())
                 if cookies:
                     for cookie in cookies:
-                        driver.add_cookie(cookie)
+                        try:
+                            driver.add_cookie(cookie)
+                        except Exception as ce:
+                            pass
                     driver.refresh()
-                    time.sleep(3)
-                    print("已加载保存的cookie")
+                    print("已加载保存的cookie，正在检测有效性...")
+                    
+                    if not check_weibo_cookie_validity(driver):
+                        print("微博cookie已过期，需要重新登录")
+                        return perform_manual_login(driver)
+                    
                     return True
                 else:
                     print("cookie文件为空，需要重新登录")
@@ -64,31 +150,35 @@ def login_and_save_cookie(driver):
                 print(f"加载cookie时出错: {str(e)}")
                 print("需要重新登录")
         
-        # 执行登录流程
-        driver.get(WEIBO_URL)
-        print("请在浏览器中手动登录微博...")
-        print("登录完成后，请按Enter键继续...")
-        input()
+        return perform_manual_login(driver)
         
-        # 等待页面加载
-        time.sleep(5)
-        
-        # 保存新cookie（无论是否找到特定元素，只要用户确认登录完成就保存）
-        try:
-            cookies = driver.get_cookies()
-            if cookies:
-                with open(WEIBO_COOKIE_PATH, 'w', encoding='utf-8') as f:
-                    json.dump(cookies, f)
-                print("登录成功，已保存新cookie")
-                return True
-            else:
-                print("未获取到cookie，登录失败")
-                return False
-        except Exception as e:
-            print(f"保存cookie时出错: {str(e)}")
-            return False
     except Exception as e:
         print(f"登录失败: {str(e)}")
+        return False
+
+def perform_manual_login(driver):
+    """执行手动登录流程"""
+    driver.get(WEIBO_URL)
+    print("\n" + "="*50)
+    print("请在浏览器中手动登录微博...")
+    print("登录完成后，请按Enter键继续...")
+    print("="*50 + "\n")
+    input()
+    
+    time.sleep(5)
+    
+    try:
+        cookies = driver.get_cookies()
+        if cookies:
+            with open(WEIBO_COOKIE_PATH, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f)
+            print("登录成功，已保存新cookie")
+            return True
+        else:
+            print("未获取到cookie，登录失败")
+            return False
+    except Exception as e:
+        print(f"保存cookie时出错: {str(e)}")
         return False
 
 def is_within_limit_hours(publish_date: str) -> bool:
@@ -592,13 +682,7 @@ def generate_weibo_investment_advice(all_content, archive_folder, current_date):
     investment_advice = deepseek_summary(
         all_content,
         sysprompt="你是一个专业的金融分析师，擅长基于多份财经市场分析报告给出投资建议。请结合宏观经济、市场情绪、行业趋势等多个维度进行分析。",
-        userprompt='''这些是最近限定时间内微博用户的内容，请基于以下所有内容，给出未来几天的投资建议，包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略\n4. 风险提示\n请详细分析并以自然文本格式给出专业建议。之后以json格式，将所有涉及到的股票和指数等标的信息附加在最后，样例格式如下：
-        {
-            "股票或指数名称": [
-                 "平安银行",
-                 "上证指数"
-            ]
-        }：\n\n'''
+        userprompt='''这些是最近限定时间内微博用户的内容，请基于以下所有内容，给出未来几天的投资建议，包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略\n4. 风险提示\n\n请详细分析并以自然文本格式给出专业建议。\n\n最后，请将所有涉及到的重点关注的指数和股票以严格的JSON格式附加在末尾，格式如下：\n```json\n{\n    "indices": [\n        {"code": "000001", "name": "上证指数"},\n        {"code": "399006", "name": "创业板指"}\n    ],\n    "stocks": [\n        {"code": "600519", "name": "贵州茅台"},\n        {"code": "000858", "name": "五粮液"}\n    ]\n}\n```\n注意：\n1. 指数代码格式：上证指数"000001"，深证成指"399001"，创业板指"399006"，科创50"000688"等\n2. 股票代码格式：6位数字代码，如"600519"、"000001"等\n3. 只列出明确提到或强烈暗示值得关注的标的\n4. 如果没有相关标的，对应数组为空\n\n请开始分析：\n\n'''
     )
     
     # 保存投资建议

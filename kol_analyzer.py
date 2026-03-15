@@ -6,6 +6,7 @@ from bili_summary import run_bili_task
 from wechat_get import run_wechat_task
 from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
+from momentum_analyzer import run_momentum_analysis
 
 class KOLAnalyzer:
     """KOL分析器主类，用于同时执行B站和微信任务并合并投资建议"""
@@ -114,12 +115,10 @@ class KOLAnalyzer:
         print("开始合并投资建议")
         print("="*50)
         
-        # 检查综合投资建议文件是否已存在
         merged_advice_path = os.path.join(self.archive_folder, f"综合投资建议_{self.current_date}.txt")
         if os.path.exists(merged_advice_path):
             print(f"综合投资建议文件已存在: {merged_advice_path}")
             print("跳过投资建议合并")
-            # 读取已存在的综合投资建议
             try:
                 with open(merged_advice_path, "r", encoding="utf-8") as f:
                     merged_advice = f.read()
@@ -129,12 +128,25 @@ class KOLAnalyzer:
                 print(f"读取现有综合投资建议失败: {str(e)}")
                 return None
         
-        # 检查是否有投资建议需要合并
         if not bili_advice and not wechat_advice and not weibo_advice:
             print("没有可用的投资建议，跳过合并")
             return None
         
-        # 准备合并内容
+        momentum_report, momentum_results = run_momentum_analysis(
+            bili_advice=bili_advice,
+            wechat_advice=wechat_advice,
+            weibo_advice=weibo_advice
+        )
+        
+        if momentum_report:
+            momentum_report_path = os.path.join(self.archive_folder, f"动量分析报告_{self.current_date}.txt")
+            try:
+                with open(momentum_report_path, "w", encoding="utf-8") as f:
+                    f.write(momentum_report)
+                print(f"动量分析报告已保存到: {momentum_report_path}")
+            except Exception as e:
+                print(f"保存动量分析报告失败: {str(e)}")
+        
         combined_content = ""
         if bili_advice:
             combined_content += f"=== B站视频分析投资建议 ===\n{bili_advice}\n\n"
@@ -143,17 +155,18 @@ class KOLAnalyzer:
         if weibo_advice:
             combined_content += f"=== 微博分析投资建议 ===\n{weibo_advice}\n\n"
         
+        if momentum_report:
+            combined_content += f"=== 重点关注标的动量分析 ===\n{momentum_report}\n\n"
+        
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
         try:
-            # 使用DeepSeek合并投资建议
             merged_advice = deepseek_summary(
                 combined_content,
-                sysprompt="你是一个资深的投资策略分析师，擅长综合多个信息源的投资建议，给出全面、客观、专业的综合投资建议。你需要考虑不同信息源的权重、时效性和可靠性。",
-                userprompt="以下是来自B站财经视频分析、微信公众号文章分析和微博分析的投资建议，请综合分析并给出未来几天的综合投资建议，包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略\n4. 风险提示\n5. 综合建议\n\n请详细分析并给出专业建议：\n\n"
+                sysprompt="你是一个资深的投资策略分析师，擅长综合多个信息源的投资建议，给出全面、客观、专业的综合投资建议。你需要考虑不同信息源的权重、时效性和可靠性，同时结合动量分析数据评估标的的技术面状态。",
+                userprompt="以下是来自B站财经视频分析、微信公众号文章分析和微博分析的投资建议，以及重点关注标的的动量分析数据。请综合分析并给出未来几天的综合投资建议，包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略（结合动量分析数据，对提到的标的给出操作建议）\n4. 风险提示\n5. 综合建议\n\n请详细分析并给出专业建议：\n\n"
             )
             
-            # 保存合并后的投资建议
             merged_advice_path = os.path.join(self.archive_folder, f"综合投资建议_{self.current_date}.txt")
             with open(merged_advice_path, "w", encoding="utf-8") as f:
                 f.write(f"综合投资建议 - {self.current_date}\n")

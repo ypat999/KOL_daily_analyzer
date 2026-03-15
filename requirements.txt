@@ -24,6 +24,14 @@ yt-dlp>=2023.11.16  # 视频下载工具
 # faster-whisper for speech recognition
 faster-whisper>=0.9.0  # 快速语音识别库
 
+# 动量分析依赖
+akshare>=1.12.0  # 中国股票市场数据获取
+pandas>=2.0.0  # 数据处理
+numpy>=1.24.0  # 数值计算
+
+# OpenAI API客户端（用于DeepSeek）
+openai>=1.0.0  # OpenAI API客户端
+
 # 其他依赖
 torch==2.6.0 --no-index -f https://mirrors.aliyun.com/pytorch-wheels/cu124/  # faster-whisper依赖
 ctranslate2>=3.20.0  # faster-whisper依赖python
