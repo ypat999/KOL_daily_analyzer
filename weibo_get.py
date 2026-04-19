@@ -19,7 +19,13 @@ from date_utils import get_current_analysis_date, ensure_archive_folder, print_d
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
 # 用户ID列表
-WEIBO_USER_IDS = ["2014433131", "2453509265"]
+WEIBO_USER_IDS = [
+    "2014433131",   #唐史主任司马迁
+    "2453509265",  #Degg_GlobalMacroFin
+    "3330457880",   #王一平_见素抱朴
+    "1769173661",    #付鹏的财经世界
+    "1236135807"     #空空道人
+    ]
 
 WEIBO_URL = "https://weibo.com/"
 WEIBO_COOKIE_PATH = "weibo_cookies.json"
@@ -65,7 +71,9 @@ def check_weibo_cookie_validity(driver):
             "sign-in",
             "login-form",
             "请先登录",
-            "重新登录"
+            "重新登录",
+            "前方有点拥堵",
+            "请登录后使用"
         ]
         
         for indicator in login_indicators:
@@ -281,13 +289,29 @@ def is_within_limit_hours(publish_date: str) -> bool:
 def get_weibo_content(driver, user_id):
     """获取指定用户的微博内容"""
     try:
-        # 访问用户主页
         user_url = f"https://weibo.com/u/{user_id}"
         driver.get(user_url)
         print(f"访问用户ID {user_id} URL：{user_url}")
-        time.sleep(8)  # 增加等待时间
+        time.sleep(8)
         
-        # 尝试从页面上提取用户名
+        page_source = driver.page_source
+        login_required_indicators = [
+            "前方有点拥堵",
+            "请登录后使用",
+            "passport-login",
+            "请先登录",
+            "重新登录"
+        ]
+        
+        for indicator in login_required_indicators:
+            if indicator in page_source:
+                print(f"检测到登录失效指示器: '{indicator}'，需要重新登录")
+                return {
+                    "contents": [],
+                    "username": f"用户{user_id}",
+                    "need_relogin": True
+                }
+        
         username = f"用户{user_id}"
         try:
             # 尝试多种可能的用户名选择器
@@ -735,10 +759,20 @@ def run_weibo_task():
         
         # 获取所有用户的微博内容
         all_weibo_collected = False
-        user_ids = ["2014433131", "2453509265"]
+        user_ids = WEIBO_USER_IDS
         for user_id in user_ids:
             print(f"\n处理用户ID: {user_id}")
             result = get_weibo_content(driver, user_id)
+            
+            if result.get("need_relogin"):
+                print("检测到需要重新登录，正在重新登录...")
+                if perform_manual_login(driver):
+                    print("重新登录成功，重试获取微博内容...")
+                    result = get_weibo_content(driver, user_id)
+                else:
+                    print("重新登录失败，跳过该用户")
+                    continue
+            
             weibo_contents = result["contents"]
             username = result["username"]
             

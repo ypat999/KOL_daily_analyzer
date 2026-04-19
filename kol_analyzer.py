@@ -1,4 +1,3 @@
-import concurrent.futures
 import os
 from datetime import datetime, timedelta
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
@@ -164,7 +163,7 @@ class KOLAnalyzer:
             merged_advice = deepseek_summary(
                 combined_content,
                 sysprompt="你是一个资深的投资策略分析师，擅长综合多个信息源的投资建议，给出全面、客观、专业的综合投资建议。你需要考虑不同信息源的权重、时效性和可靠性，同时结合动量分析数据评估标的的技术面状态。",
-                userprompt="以下是来自B站财经视频分析、微信公众号文章分析和微博分析的投资建议，以及重点关注标的的动量分析数据。请综合分析并给出未来几天的综合投资建议，包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略（结合动量分析数据，对提到的标的给出操作建议）\n4. 风险提示\n5. 综合建议\n\n请详细分析并给出专业建议：\n\n"
+                userprompt="以下是来自B站财经视频分析、微信公众号文章分析和微博分析的投资建议，以及重点关注标的的动量分析数据。请综合分析并给出未来几天的综合投资建议，包括：\n1. 整体市场判断\n2. 重点行业/板块分析\n3. 具体投资策略（结合动量分析数据，对提到的标的给出操作建议）\n4. 风险提示\n5. 综合建议\n\n请详细分析并给出专业建议，并判断是否入场进行操作还是继续场外观察：\n\n"
             )
             
             merged_advice_path = os.path.join(self.archive_folder, f"综合投资建议_{self.current_date}.txt")
@@ -183,24 +182,17 @@ class KOLAnalyzer:
             return None
     
     def run_all_tasks(self):
-        """同时运行所有任务并合并投资建议"""
+        """顺序运行所有任务并合并投资建议（避免浏览器资源冲突）"""
         print("\n" + "="*60)
         print(f"开始执行KOL分析任务 - {self.current_date}")
         print("="*60)
         
-        # 使用线程池同时执行B站、微信和微博任务
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            # 提交任务
-            bili_future = executor.submit(self.run_bili_task)
-            wechat_future = executor.submit(self.run_wechat_task)
-            weibo_future = executor.submit(self.run_weibo_task)
-            
-            # 等待任务完成并获取结果
-            bili_advice = bili_future.result()
-            wechat_advice = wechat_future.result()
-            weibo_advice = weibo_future.result()
+        print("\n>>> 任务调度说明: B站、微信、微博任务需要使用浏览器，改为顺序执行避免资源冲突")
         
-        # 合并投资建议
+        bili_advice = self.run_bili_task()
+        wechat_advice = self.run_wechat_task()
+        weibo_advice = self.run_weibo_task()
+        
         merged_advice = self.merge_investment_advice(bili_advice, wechat_advice, weibo_advice)
         
         print("\n" + "="*60)
