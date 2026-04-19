@@ -234,13 +234,11 @@ def is_within_limit_hours(publish_date: str) -> bool:
 
     # 处理相对时间格式（今天、X小时前、X分钟前等）
     if is_weekend_period:
-        # 周末时，收录周五15:00后发布的所有内容
         friday_date = get_friday_date_for_weekend(now)
         friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
         
         if "分钟" in publish_date or "今天" in publish_date:
-            # "今天"或"X分钟前"发布的内容，检查当前时间是否已过周五15:00
-            return now >= friday_close_time
+            return True
             
         if "小时前" in publish_date:
             match = re.search(r'(\d+)小时前', publish_date)
@@ -248,21 +246,19 @@ def is_within_limit_hours(publish_date: str) -> bool:
                 hours = int(match.group(1))
                 publish_time = now - timedelta(hours=hours)
                 return publish_time >= friday_close_time
-            return True  # 无法解析时默认包含
+            return True
             
         if "昨天" in publish_date:
-            # "昨天"的内容在周末总是包含（因为昨天是周五或周六）
             return True
             
         if "天前" in publish_date:
             match = re.search(r'(\d+)天前', publish_date)
             if match:
                 days = int(match.group(1))
-                # 周末时，1-2天前的内容也包含（可能是周五或周四）
-                return days <= 2  # 包含最多2天前的内容
+                return days <= 2
             return True
             
-        return True  # 其他情况默认包含
+        return True
     else:
         # 平时的处理逻辑（周一至周五）
         if "分钟" in publish_date:

@@ -1,4 +1,5 @@
 import os
+import json
 from datetime import datetime, timedelta
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from bili_summary import run_bili_task
@@ -7,15 +8,190 @@ from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
 
+COOKIE_FILES = {
+    "weibo": "weibo_cookies.json",
+    "bili": "bili_cookies.json",
+    "wechat": "wechat_cookies.json"
+}
+
+def check_cookie_exists(platform: str) -> bool:
+    """检查指定平台的cookie文件是否存在"""
+    cookie_file = COOKIE_FILES.get(platform)
+    if cookie_file and os.path.exists(cookie_file):
+        try:
+            with open(cookie_file, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    return True
+        except:
+            pass
+    return False
+
+def perform_unified_login():
+    """统一登录所有平台"""
+    print("\n" + "="*60)
+    print("开始统一登录流程")
+    print("="*60)
+    
+    login_results = {}
+    
+    print("\n[1/3] 检查微博登录状态...")
+    if check_cookie_exists("weibo"):
+        print("微博cookie文件已存在")
+        login_results["weibo"] = True
+    else:
+        print("微博cookie不存在，需要登录")
+        login_results["weibo"] = login_weibo_standalone()
+    
+    print("\n[2/3] 检查微信登录状态...")
+    if check_cookie_exists("wechat"):
+        print("微信cookie文件已存在")
+        login_results["wechat"] = True
+    else:
+        print("微信cookie不存在，需要登录")
+        login_results["wechat"] = login_wechat_standalone()
+    
+    print("\n[3/3] 检查B站登录状态...")
+    if check_cookie_exists("bili"):
+        print("B站cookie文件已存在")
+        login_results["bili"] = True
+    else:
+        print("B站cookie不存在，需要登录")
+        login_results["bili"] = login_bili_standalone()
+    
+    print("\n" + "="*60)
+    print("统一登录流程完成")
+    print("="*60)
+    print(f"微博: {'✓ 已登录' if login_results['weibo'] else '✗ 登录失败'}")
+    print(f"微信: {'✓ 已登录' if login_results['wechat'] else '✗ 登录失败'}")
+    print(f"B站: {'✓ 已登录' if login_results['bili'] else '✗ 登录失败'}")
+    
+    return login_results
+
+def login_weibo_standalone():
+    """独立微博登录函数"""
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        
+        print("正在启动微博登录浏览器...")
+        options = webdriver.ChromeOptions()
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options
+        )
+        driver.set_window_size(1000, 800)
+        
+        driver.get("https://weibo.com/")
+        print("\n" + "="*50)
+        print("请在浏览器中手动登录微博...")
+        print("登录完成后，请按Enter键继续...")
+        print("="*50 + "\n")
+        input()
+        
+        import time
+        time.sleep(3)
+        
+        cookies = driver.get_cookies()
+        if cookies:
+            with open(COOKIE_FILES["weibo"], 'w', encoding='utf-8') as f:
+                json.dump(cookies, f)
+            print("微博登录成功，cookie已保存")
+            driver.quit()
+            return True
+        else:
+            print("微博登录失败，未获取到cookie")
+            driver.quit()
+            return False
+    except Exception as e:
+        print(f"微博登录出错: {str(e)}")
+        return False
+
+def login_wechat_standalone():
+    """独立微信登录函数"""
+    try:
+        print("微信使用cookie文件登录，请确保wechat_cookies.json文件有效")
+        print("如需更新cookie，请运行 wechat_login.py")
+        return check_cookie_exists("wechat")
+    except Exception as e:
+        print(f"微信登录检查出错: {str(e)}")
+        return False
+
+def login_bili_standalone():
+    """独立B站登录函数"""
+    try:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from webdriver_manager.chrome import ChromeDriverManager
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        
+        print("正在启动B站登录浏览器...")
+        options = webdriver.ChromeOptions()
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options
+        )
+        driver.set_window_size(800, 600)
+        
+        driver.get("https://www.bilibili.com")
+        print("\n" + "="*50)
+        print("请在浏览器中手动登录B站...")
+        print("登录完成后，请按Enter键继续...")
+        print("="*50 + "\n")
+        input()
+        
+        import time
+        time.sleep(3)
+        
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '.bili-avatar'))
+            )
+            cookies = driver.get_cookies()
+            if cookies:
+                with open(COOKIE_FILES["bili"], 'w', encoding='utf-8') as f:
+                    json.dump(cookies, f)
+                print("B站登录成功，cookie已保存")
+                driver.quit()
+                return True
+            else:
+                print("B站登录失败，未获取到cookie")
+                driver.quit()
+                return False
+        except:
+            print("B站登录状态验证失败，但cookie已保存")
+            cookies = driver.get_cookies()
+            if cookies:
+                with open(COOKIE_FILES["bili"], 'w', encoding='utf-8') as f:
+                    json.dump(cookies, f)
+                driver.quit()
+                return True
+            driver.quit()
+            return False
+    except Exception as e:
+        print(f"B站登录出错: {str(e)}")
+        return False
+
 class KOLAnalyzer:
-    """KOL分析器主类，用于同时执行B站和微信任务并合并投资建议"""
+    """KOL分析器主类，用于执行各平台任务并合并投资建议"""
     
     def __init__(self):
-        # 使用统一的日期工具获取当前分析日期
         self.current_date, date_reason, self.archive_folder = get_current_analysis_date()
         print_date_info()
         
-        # 确保归档文件夹存在
         ensure_archive_folder(self.archive_folder)
     
     def run_bili_task(self):
@@ -24,12 +200,10 @@ class KOLAnalyzer:
         print("开始执行B站视频分析任务")
         print("="*50)
         
-        # 检查B站投资建议文件是否已存在
         bili_advice_path = os.path.join(self.archive_folder, f"bili_投资建议_{self.current_date}.txt")
         if os.path.exists(bili_advice_path):
             print(f"B站投资建议文件已存在: {bili_advice_path}")
             print("跳过B站任务执行")
-            # 读取已存在的投资建议
             try:
                 with open(bili_advice_path, "r", encoding="utf-8") as f:
                     bili_advice = f.read()
@@ -40,7 +214,6 @@ class KOLAnalyzer:
                 return None
         
         try:
-            # 调用bili_summary.py中的run_bili_task方法
             bili_advice = run_bili_task()
             print(f"B站任务完成，返回投资建议: {bili_advice is not None}")
             return bili_advice
@@ -54,12 +227,10 @@ class KOLAnalyzer:
         print("开始执行微信公众号文章分析任务")
         print("="*50)
         
-        # 检查微信投资建议文件是否已存在
         wechat_advice_path = os.path.join(self.archive_folder, f"wechat_投资建议_{self.current_date}.txt")
         if os.path.exists(wechat_advice_path):
             print(f"微信投资建议文件已存在: {wechat_advice_path}")
             print("跳过微信任务执行")
-            # 读取已存在的投资建议
             try:
                 with open(wechat_advice_path, "r", encoding="utf-8") as f:
                     wechat_advice = f.read()
@@ -70,7 +241,6 @@ class KOLAnalyzer:
                 return None
         
         try:
-            # 调用wechat_get.py中的run_wechat_task方法
             wechat_advice = run_wechat_task()
             print(f"微信任务完成，返回投资建议: {wechat_advice is not None}")
             return wechat_advice
@@ -84,12 +254,10 @@ class KOLAnalyzer:
         print("开始执行微博分析任务")
         print("="*50)
         
-        # 检查微博投资建议文件是否已存在
         weibo_advice_path = os.path.join(self.archive_folder, f"weibo_投资建议_{self.current_date}.txt")
         if os.path.exists(weibo_advice_path):
             print(f"微博投资建议文件已存在: {weibo_advice_path}")
             print("跳过微博任务执行")
-            # 读取已存在的投资建议
             try:
                 with open(weibo_advice_path, "r", encoding="utf-8") as f:
                     weibo_advice = f.read()
@@ -100,7 +268,6 @@ class KOLAnalyzer:
                 return None
         
         try:
-            # 调用weibo_get.py中的run_weibo_task方法
             weibo_advice = run_weibo_task()
             print(f"微博任务完成，返回投资建议: {weibo_advice is not None}")
             return weibo_advice
@@ -181,17 +348,27 @@ class KOLAnalyzer:
             print(f"合并投资建议失败: {str(e)}")
             return None
     
-    def run_all_tasks(self):
-        """顺序运行所有任务并合并投资建议（避免浏览器资源冲突）"""
+    def run_all_tasks(self, skip_login: bool = False):
+        """顺序运行所有任务并合并投资建议
+        
+        Args:
+            skip_login: 是否跳过统一登录流程
+        """
         print("\n" + "="*60)
         print(f"开始执行KOL分析任务 - {self.current_date}")
         print("="*60)
         
-        print("\n>>> 任务调度说明: B站、微信、微博任务需要使用浏览器，改为顺序执行避免资源冲突")
+        if not skip_login:
+            login_results = perform_unified_login()
+            print("\n>>> 登录状态检查完成，开始执行任务...")
+        else:
+            print("\n>>> 跳过统一登录流程，直接执行任务...")
         
-        bili_advice = self.run_bili_task()
-        wechat_advice = self.run_wechat_task()
+        print("\n>>> 任务执行顺序: 微博 → 微信 → B站")
+        
         weibo_advice = self.run_weibo_task()
+        wechat_advice = self.run_wechat_task()
+        bili_advice = self.run_bili_task()
         
         merged_advice = self.merge_investment_advice(bili_advice, wechat_advice, weibo_advice)
         
@@ -209,7 +386,6 @@ class KOLAnalyzer:
 
 
 if __name__ == "__main__":
-    # 创建KOL分析器实例并运行所有任务
     analyzer = KOLAnalyzer()
     result = analyzer.run_all_tasks()
     
