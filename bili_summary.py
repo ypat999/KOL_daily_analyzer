@@ -354,104 +354,6 @@ def get_subtitle_url(bvid: str, driver_video=None) -> str:
         if should_quit:
             driver_video.quit()
 
-# 多线程版本：获取多个视频的字幕URL
-def get_subtitle_urls_threaded(videos: list, max_workers: int = 3):
-    """使用多线程并行获取多个视频的字幕URL"""
-    subtitle_results = []
-    
-    def process_video(video):
-        """处理单个视频的字幕URL获取"""
-        try:
-            # 检查字幕文件是否已存在
-            # 获取当前时间
-            now = datetime.now()
-            weekday = now.weekday()  # 0=周一, 6=周日
-            
-            # 检查是否为周末 (周六或周日)
-            is_weekend = weekday >= 5  # 5=周六, 6=周日
-            
-            if is_weekend:
-                # 计算最近的周五日期
-                days_since_friday = (weekday - 4) % 7
-                friday_date = now - timedelta(days=days_since_friday)
-                current_date = friday_date.strftime('%Y-%m-%d')
-            elif now.hour < 9:
-                # 如果当前时间未达到当日9点，则使用前一天的日期
-                current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-            else:
-                current_date = now.strftime('%Y-%m-%d')
-            
-            archive_folder = f'archive_{current_date}'
-            subtitle_path = os.path.join(archive_folder, f"bili_{video['title']}.txt")
-            
-            if os.path.exists(subtitle_path):
-                print(f"视频《{video['title']}》字幕文件已存在，跳过获取字幕URL")
-                return {
-                    'video': video,
-                    'subtitle_url': 'local_file_exists'  # 特殊标记表示本地文件已存在
-                }
-            
-            # 从video['url']中提取BVID
-            url = video['url']
-            match = re.search(r'/video/(BV[^/?]+)', url)
-            if match:
-                bvid = match.group(1)
-            else:
-                print(f'警告：未从URL中提取到BVID，URL：{url}')
-                return None
-            
-            # 创建独立的浏览器实例
-            driver = setup_browser()
-            logged_in = login_and_save_cookie(driver)
-            
-            if not logged_in:
-                print(f"视频 {video['title']} 登录失败")
-                driver.quit()
-                return None
-            
-            subtitle_url = get_subtitle_url(bvid, driver)
-            driver.quit()
-            
-            if subtitle_url:
-                print(f"视频《{video['title']}》字幕URL获取成功")
-                return {
-                    'video': video,
-                    'subtitle_url': subtitle_url
-                }
-            else:
-                print(f"视频《{video['title']}》无字幕")
-                return None
-        except Exception as e:
-            print(f"视频《{video['title']}》字幕URL获取失败：{str(e)}")
-            return None
-    
-    # 使用线程池并行处理
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 提交所有任务
-        future_to_video = {executor.submit(process_video, video): video for video in videos}
-        
-        # 收集结果
-        completed_count = 0
-        total_count = len(videos)
-        
-        for future in concurrent.futures.as_completed(future_to_video, timeout=3600):  # 1小时总超时
-            video = future_to_video[future]
-            try:
-                result = future.result(timeout=600)  # 单个任务10分钟超时
-                if result:
-                    subtitle_results.append(result)
-                completed_count += 1
-                print(f"进度: {completed_count}/{total_count} 视频处理完成")
-            except concurrent.futures.TimeoutError:
-                print(f"视频《{video['title']}》处理超时，跳过")
-            except Exception as e:
-                print(f"视频《{video['title']}》处理异常：{str(e)}")
-                completed_count += 1
-                print(f"进度: {completed_count}/{total_count} 视频处理完成")
-    
-    print(f"字幕URL获取完成，成功获取 {len(subtitle_results)}/{total_count} 个视频的字幕")
-    return subtitle_results
-
 def run_bili_task(use_api_for_videos: bool = False):
     """运行B站视频分析任务
     
@@ -498,7 +400,7 @@ def run_bili_task(use_api_for_videos: bool = False):
     
     # 使用多线程并行获取所有视频的字幕URL（优先使用API方式）
     print("开始使用多线程并行获取视频字幕URL（API方式）...")
-    subtitle_results = get_subtitle_urls_threaded(all_videos, max_workers=5, use_api=True)
+    subtitle_results = get_subtitle_urls_threaded(all_videos, archive_folder, max_workers=5, use_api=True)
     print(f"成功获取到 {len(subtitle_results)} 个视频的字幕URL")
     
     # 处理获取到字幕的视频
@@ -769,33 +671,21 @@ def get_subtitle_url_via_api(bvid: str):
         return None
 
 # 改进的多线程版本：获取多个视频的字幕URL（支持API方式）
-def get_subtitle_urls_threaded(videos: list, max_workers: int = 3, use_api: bool = True):
-    """使用多线程并行获取多个视频的字幕URL，可选择使用API或浏览器方式"""
+def get_subtitle_urls_threaded(videos: list, archive_folder: str, max_workers: int = 3, use_api: bool = True):
+    """使用多线程并行获取多个视频的字幕URL，可选择使用API或浏览器方式
+    
+    Args:
+        videos: 视频列表
+        archive_folder: 归档文件夹路径
+        max_workers: 最大线程数
+        use_api: 是否使用API方式
+    """
     subtitle_results = []
     
     def process_video(video):
         """处理单个视频的字幕URL获取"""
         try:
             # 检查字幕文件是否已存在
-            # 获取当前时间
-            now = datetime.now()
-            weekday = now.weekday()  # 0=周一, 6=周日
-            
-            # 检查是否为周末 (周六或周日)
-            is_weekend = weekday >= 5  # 5=周六, 6=周日
-            
-            if is_weekend:
-                # 计算最近的周五日期
-                days_since_friday = (weekday - 4) % 7
-                friday_date = now - timedelta(days=days_since_friday)
-                current_date = friday_date.strftime('%Y-%m-%d')
-            elif now.hour < 9:
-                # 如果当前时间未达到当日9点，则使用前一天的日期
-                current_date = (now - timedelta(days=1)).strftime('%Y-%m-%d')
-            else:
-                current_date = now.strftime('%Y-%m-%d')
-            
-            archive_folder = f'archive_{current_date}'
             subtitle_path = os.path.join(archive_folder, f"bili_{video['title']}.txt")
             
             if os.path.exists(subtitle_path):
@@ -835,7 +725,7 @@ def get_subtitle_urls_threaded(videos: list, max_workers: int = 3, use_api: bool
             print(f"视频《{video['title']}》字幕URL获取失败：{str(e)}")
             return None
     
-    def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str = None):
+    def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str):
         """浏览器方式获取字幕URL（备用方案）
         
         Args:
@@ -1055,9 +945,46 @@ def download_video_with_ytdlp(video_url: str, output_dir: str) -> str:
             '-x',  # 提取音频
             '--audio-format', 'wav',  # 转换为wav格式
             '--audio-quality', '0',  # 最高质量
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--add-header', 'Referer:https://www.bilibili.com',
+            '--add-header', 'Origin:https://www.bilibili.com',
+            '--ignore-errors',  # 忽略错误继续下载（处理充电视频）
+            '--no-check-certificate',  # 不检查证书
             '--output', os.path.join(output_dir, '%(title)s.%(ext)s'),
-            video_url
         ]
+        
+        # 加载cookies文件（如果存在）
+        if os.path.exists(COOKIE_PATH):
+            # 将浏览器cookies转换为Netscape格式（yt-dlp需要的格式）
+            try:
+                with open(COOKIE_PATH, 'r', encoding='utf-8') as f:
+                    cookies = json.load(f)
+                
+                # 确保输出目录存在
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # 创建临时cookies文件（Netscape格式）
+                cookies_txt_path = os.path.join(output_dir, 'cookies.txt')
+                with open(cookies_txt_path, 'w', encoding='utf-8') as f:
+                    f.write("# Netscape HTTP Cookie File\n")
+                    for cookie in cookies:
+                        if 'name' in cookie and 'value' in cookie:
+                            domain = cookie.get('domain', '.bilibili.com')
+                            path = cookie.get('path', '/')
+                            secure = 'TRUE' if cookie.get('secure', False) else 'FALSE'
+                            # Netscape cookies 格式: domain domain_specified path secure expiration name value
+                            # domain_specified: TRUE if domain starts with '.', FALSE otherwise
+                            domain_specified = 'TRUE' if domain.startswith('.') else 'FALSE'
+                            f.write(f"{domain}\t{domain_specified}\t{path}\t{secure}\t0\t{cookie['name']}\t{cookie['value']}\n")
+                
+                cmd.extend(['--cookies', cookies_txt_path])
+                print("已加载cookies文件用于yt-dlp下载")
+            except Exception as e:
+                print(f"加载cookies失败: {str(e)}，将使用未登录状态下载")
+        else:
+            print(f"Cookie文件不存在: {COOKIE_PATH}，将使用未登录状态下载")
+        
+        cmd.append(video_url)
         
         # 尝试检测ffmpeg位置，如果失败则不指定路径
         try:
@@ -1090,6 +1017,33 @@ def download_video_with_ytdlp(video_url: str, output_dir: str) -> str:
             print(f"yt-dlp错误输出: {result.stderr[:500]}")
         
         if result.returncode != 0:
+            # 如果是HTTP 412错误，尝试下载较低质量的版本（可能是预览版本）
+            if 'HTTP Error 412' in result.stderr or 'HTTP Error 412' in result.stdout:
+                print("检测到HTTP 412错误，尝试下载较低质量版本...")
+                cmd_retry = cmd.copy()
+                # 添加格式选择，优先选择较低质量
+                cmd_retry.insert(1, '-f')
+                cmd_retry.insert(2, 'worst[ext=mp4]/worst')
+                
+                print(f"重试命令: {' '.join(cmd_retry)}")
+                result_retry = subprocess.run(cmd_retry, capture_output=True, text=True, timeout=1800)
+                
+                print(f"重试返回码: {result_retry.returncode}")
+                if result_retry.stdout:
+                    print(f"重试标准输出: {result_retry.stdout[:500]}")
+                if result_retry.stderr:
+                    print(f"重试错误输出: {result_retry.stderr[:500]}")
+                
+                if result_retry.returncode == 0:
+                    # 解析重试输出获取文件路径
+                    lines = result_retry.stdout.split('\n')
+                    for line in lines:
+                        if '[ExtractAudio] Destination:' in line:
+                            file_path = line.split('Destination:')[-1].strip()
+                            if os.path.exists(file_path):
+                                print(f"音频下载成功（低质量版本）: {file_path}")
+                                return file_path
+            
             print(f"yt-dlp下载失败，返回码: {result.returncode}")
             return None
         
