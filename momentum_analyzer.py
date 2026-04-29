@@ -2,7 +2,7 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
-from openai import OpenAI
+from deepseek_summary import deepseek_summary
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -44,23 +44,6 @@ def _wait_for_rate_limit():
     if elapsed < _request_interval:
         time.sleep(_request_interval - elapsed)
     _last_request_time = time.time()
-
-
-def load_api_key_from_file():
-    """从deepseek_api_key.txt文件读取key值"""
-    try:
-        with open("deepseek_api_key.txt", "r", encoding="utf-8") as f:
-            api_key = f.read().strip()
-            if not api_key:
-                print("警告: deepseek_api_key.txt文件为空")
-                return ""
-            return api_key
-    except FileNotFoundError:
-        print("错误: 未找到deepseek_api_key.txt文件")
-        return ""
-    except Exception as e:
-        print(f"读取key文件时出错: {e}")
-        return ""
 
 
 def parse_targets_from_text(text):
@@ -133,50 +116,27 @@ def extract_key_targets(investment_advice, source_name=""):
     
     print(f"[{source_name}] 未找到结构化标的信息，尝试使用DeepSeek提取...")
     
-    DEEPSEEK_API_KEY = load_api_key_from_file()
-    if not DEEPSEEK_API_KEY:
-        print("无法获取DeepSeek API Key，跳过标的提取")
-        return {"indices": [], "stocks": []}
-    
-    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
-    
-    system_prompt = """你是一个专业的金融分析师，擅长从投资建议中提取关键投资标的。
-你的任务是从给定的投资建议文本中提取出重点关注的指数和股票。
-
-请严格按照以下JSON格式输出，不要添加任何其他内容：
-{
-    "indices": [
-        {"code": "代码", "name": "名称", "reason": "关注原因"}
-    ],
-    "stocks": [
-        {"code": "代码", "name": "名称", "reason": "关注原因"}
-    ]
-}
-
-注意事项：
-1. 指数代码格式：上证指数用"000001"，深证成指用"399001"，创业板指用"399006"，科创50用"000688"等
-2. 股票代码格式：6位数字代码，如"000001"、"600519"等
-3. 只提取明确提到或强烈暗示值得关注的标的
-4. 如果没有明确的标的，返回空列表
-5. reason字段简要说明为什么关注该标的"""
-
-    user_prompt = f"""请从以下投资建议中提取重点关注的指数和股票：
-
-{investment_advice}
-
-请严格按照JSON格式输出："""
-
     try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            stream=False
+        result_text = deepseek_summary(
+            investment_advice,
+            sysprompt=(
+                "你是一个金融数据NLP解析引擎，职责是从投资分析文本中精确提取出所有被提及的"
+                "指数和股票标的，输出严格的机器可读JSON格式。\n\n"
+                "提取规则：\n"
+                "1. 只提取被明确提到名称或代码的指数和股票\n"
+                "2. 对于指数：使用标准代码（上证000001/深证成指399001/创业板399006/科创50-000688/沪深300-000300/恒生HSI）\n"
+                "3. 对于股票：必须是6位数字代码，从文本中查找或根据名称推断标准代码\n"
+                "4. reason字段必须简要写明该标的在文本中被关注的理由（15字以内）\n"
+                "5. 如果文本中确实没有明确提及任何标的，返回空列表\n\n"
+                "输出格式（严格遵守，不要输出任何JSON之外的内容）：\n"
+                '{"indices":[{"code":"000001","name":"上证指数","reason":"突破关键阻力位"}],"stocks":[{"code":"600519","name":"贵州茅台","reason":"业绩超预期"}]}'
+            ),
+            userprompt="请从以下投资分析中提取所有被提及的指数和股票标的，输出严格JSON格式：\n\n",
+            thinking={"type": "disabled"},
+            response_format={"type": "json_object"},
+            temperature=0.05,
+            max_tokens=4096
         )
-        
-        result_text = response.choices[0].message.content.strip()
         
         json_match = re.search(r'\{[\s\S]*\}', result_text)
         if json_match:
