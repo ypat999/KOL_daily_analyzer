@@ -60,9 +60,12 @@ def deepseek_summary(subtitle,
     if thinking_config:
         extra_body["thinking"] = thinking_config
 
-    effort = reasoning_effort if reasoning_effort is not None else MODEL_CONFIG.get("reasoning_effort")
-    if effort:
-        extra_body["reasoning_effort"] = effort
+    if thinking_config and thinking_config.get("type") == "disabled":
+        pass
+    else:
+        effort = reasoning_effort if reasoning_effort is not None else MODEL_CONFIG.get("reasoning_effort")
+        if effort:
+            extra_body["reasoning_effort"] = effort
 
     response = client.chat.completions.create(
         model=model or MODEL_CONFIG["model"],

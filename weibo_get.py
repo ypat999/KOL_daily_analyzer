@@ -15,6 +15,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
+from prediction_recorder import record_predictions_from_advice
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
@@ -670,6 +671,12 @@ def save_weibo_content(user_id, username, weibo_contents, archive_folder):
             f.write("="*50 + "\n\n")
     
     print(f"微博内容已保存到: {filename}")
+    
+    # 提取并保存该微博用户的预测观点
+    weibo_text = '\n\n'.join([item['content'] for item in weibo_contents if item.get('content')])
+    if weibo_text:
+        record_predictions_from_advice(weibo_text, "weibo", username, 
+                                       get_current_analysis_date()[0], archive_folder)
 
 def collect_all_weibo_content(archive_folder):
     """收集所有微博内容"""
@@ -758,6 +765,10 @@ def generate_weibo_investment_advice(all_content, archive_folder, current_date):
         f.write(investment_advice)
     
     print(f"投资建议已保存到: {advice_filename}")
+    
+    # 提取并保存微博整体投资建议的预测观点
+    record_predictions_from_advice(investment_advice, "weibo", "微博综合", current_date, archive_folder)
+    
     return investment_advice
 
 def run_weibo_task():

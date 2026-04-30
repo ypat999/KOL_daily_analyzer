@@ -28,6 +28,7 @@ import json
 from extract_subtitle import extract_subtitle_from_url
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
+from prediction_recorder import record_predictions_from_advice
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
@@ -476,6 +477,10 @@ def run_bili_task(use_api_for_videos: bool = False):
                 with open(summary_path, "w", encoding="utf-8") as f:
                     f.write(summary)
                 print(f"总结已保存到: {summary_path}")
+                
+                # 提取并保存该视频的预测观点
+                up_name = identify_bili_up(summary) or identify_bili_up(subtitle) or "未知UP主"
+                record_predictions_from_advice(summary, "bili", up_name, current_date, archive_folder)
         except Exception as e:
             print(f"视频《{video['title']}》处理失败：{str(e)}")
     
@@ -548,6 +553,9 @@ def run_bili_task(use_api_for_videos: bool = False):
     with open(advice_path, "w", encoding="utf-8") as f:
         f.write(investment_advice)
     print(f"投资建议已保存到: {advice_path}")
+    
+    # 提取并保存B站整体投资建议的预测观点
+    record_predictions_from_advice(investment_advice, "bili", "B站综合", current_date, archive_folder)
     
     print("B站任务完成")
     return investment_advice

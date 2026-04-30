@@ -3,12 +3,8 @@ from datetime import datetime, date, timedelta
 from tqdm import tqdm
 from deepseek_summary import deepseek_summary
 
-# 从date_utils导入日期处理函数
-try:
-    from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
-except ImportError:
-    # 如果导入失败，定义本地版本（已废弃，使用date_utils模块）
-    pass
+from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
+from prediction_recorder import record_predictions_from_advice
 # 导入自动登录模块
 try:
     from wechat_login import update_wechat_cookie, check_cookie_validity
@@ -356,6 +352,10 @@ def save_single_article(account_name, article, content, today):
     url = article.get('link', '')
     print(f"  已保存文章: {title}")
     print(f"  文章URL: {url}")
+    
+    # 提取并保存该公众号文章的预测观点
+    if content and len(content.strip()) > 50:
+        record_predictions_from_advice(content, "wechat", account_name, today, f"archive_{today}")
 
 
 def save_daily_content(all_content):
@@ -515,6 +515,10 @@ def generate_investment_advice(all_content, today):
         f.write(investment_advice)
     
     print(f"投资建议已保存到: {advice_filename}")
+    
+    # 提取并保存微信整体投资建议的预测观点
+    record_predictions_from_advice(investment_advice, "wechat", "微信综合", today, archive_dir)
+    
     return investment_advice
 
 

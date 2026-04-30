@@ -7,6 +7,7 @@ from wechat_get import run_wechat_task
 from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
+from prediction_recorder import record_predictions_from_advice
 
 COOKIE_FILES = {
     "weibo": "weibo_cookies.json",
@@ -390,6 +391,10 @@ class KOLAnalyzer:
                 f.write(merged_advice)
             
             print(f"综合投资建议已保存到: {merged_advice_path}")
+            
+            # 提取并保存综合投资建议的预测观点
+            record_predictions_from_advice(merged_advice, "merged", "综合分析", self.current_date, self.archive_folder)
+            
             print("投资建议合并完成")
             return merged_advice
             
