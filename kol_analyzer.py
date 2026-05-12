@@ -8,6 +8,7 @@ from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
 from prediction_recorder import record_predictions_from_advice
+from position_manager import run_position_analysis, list_positions, load_positions
 
 COOKIE_FILES = {
     "weibo": "weibo_cookies.json",
@@ -402,11 +403,12 @@ class KOLAnalyzer:
             print(f"合并投资建议失败: {str(e)}")
             return None
     
-    def run_all_tasks(self, skip_login: bool = False):
+    def run_all_tasks(self, skip_login: bool = False, include_position: bool = True):
         """顺序运行所有任务并合并投资建议
         
         Args:
             skip_login: 是否跳过统一登录流程
+            include_position: 是否包含持仓分析
         """
         print("\n" + "="*60)
         print(f"开始执行KOL分析任务 - {self.current_date}")
@@ -426,6 +428,87 @@ class KOLAnalyzer:
         
         merged_advice = self.merge_investment_advice(bili_advice, wechat_advice, weibo_advice)
         
+        position_result = None
+        match_result = None
+        match_report = None
+        
+        if include_position:
+            print("\n" + "="*60)
+            print("持仓分析")
+            print("="*60)
+            
+            positions = load_positions()
+            if positions["stocks"] or positions["indices"]:
+                position_result, match_result, match_report = run_position_analysis(
+                    bili_advice=bili_advice,
+                    wechat_advice=wechat_advice,
+                    weibo_advice=weibo_advice
+                )
+                
+                if match_report:
+                    match_report_path = os.path.join(self.archive_folder, f"持仓匹配分析_{self.current_date}.txt")
+                    try:
+                        with open(match_report_path, "w", encoding="utf-8") as f:
+                            f.write(match_report)
+                        print(f"持仓匹配分析已保存到: {match_report_path}")
+                    except Exception as e:
+                        print(f"保存持仓匹配分析失败: {str(e)}")
+                
+                if position_result:
+                    position_report_path = os.path.join(self.archive_folder, f"持仓动量分析_{self.current_date}.txt")
+                    try:
+                        report_lines = []
+                        report_lines.append("=" * 60)
+                        report_lines.append("持仓动量分析报告")
+                        report_lines.append(f"分析日期: {position_result['analysis_date']}")
+                        report_lines.append("=" * 60)
+                        
+                        if position_result["stocks"]:
+                            report_lines.append("\n【股票持仓】")
+                            report_lines.append("-" * 40)
+                            for s in position_result["stocks"]:
+                                report_lines.append(f"\n{s['name']}({s['code']})")
+                                report_lines.append(f"  持仓: {s['shares']}股 @ {s['cost_price']}")
+                                report_lines.append(f"  最新价: {s['latest_price']:.2f}")
+                                report_lines.append(f"  市值: {s['market_value']:.2f}")
+                                report_lines.append(f"  盈亏: {s['profit_loss']:+.2f} ({s['profit_pct']:+.2f}%)")
+                                factors = s['momentum_factors']
+                                report_lines.append(f"  20日收益率: {factors['return_20d']}%")
+                                report_lines.append(f"  60日收益率: {factors['return_60d']}%")
+                                if factors['trend_strength']:
+                                    ts = factors['trend_strength']
+                                    report_lines.append(f"  趋势: {ts['trend_direction']} | 强度: {ts['trend_level']} ({ts['overall_strength']})")
+                        
+                        if position_result["indices"]:
+                            report_lines.append("\n【指数/ETF持仓】")
+                            report_lines.append("-" * 40)
+                            for idx in position_result["indices"]:
+                                report_lines.append(f"\n{idx['name']}({idx['code']})")
+                                report_lines.append(f"  持仓: {idx['shares']}份 @ {idx['cost_price']}")
+                                report_lines.append(f"  最新价: {idx['latest_price']:.2f}")
+                                report_lines.append(f"  市值: {idx['market_value']:.2f}")
+                                report_lines.append(f"  盈亏: {idx['profit_loss']:+.2f} ({idx['profit_pct']:+.2f}%)")
+                                factors = idx['momentum_factors']
+                                report_lines.append(f"  20日收益率: {factors['return_20d']}%")
+                                report_lines.append(f"  60日收益率: {factors['return_60d']}%")
+                                if factors['trend_strength']:
+                                    ts = factors['trend_strength']
+                                    report_lines.append(f"  趋势: {ts['trend_direction']} | 强度: {ts['trend_level']} ({ts['overall_strength']})")
+                        
+                        report_lines.append("\n" + "-" * 40)
+                        report_lines.append(f"总市值: {position_result['total_market_value']:.2f}")
+                        report_lines.append(f"总盈亏: {position_result['total_profit_loss']:+.2f}")
+                        report_lines.append("=" * 60)
+                        
+                        with open(position_report_path, "w", encoding="utf-8") as f:
+                            f.write("\n".join(report_lines))
+                        print(f"持仓动量分析已保存到: {position_report_path}")
+                    except Exception as e:
+                        print(f"保存持仓动量分析失败: {str(e)}")
+            else:
+                print("暂无持仓数据，跳过持仓分析")
+                print("提示: 使用 position_manager.py 添加持仓信息")
+        
         print("\n" + "="*60)
         print("所有KOL分析任务完成")
         print("="*60)
@@ -435,6 +518,8 @@ class KOLAnalyzer:
             "wechat_advice": wechat_advice,
             "weibo_advice": weibo_advice,
             "merged_advice": merged_advice,
+            "position_result": position_result,
+            "match_result": match_result,
             "date": self.current_date
         }
 
@@ -448,4 +533,6 @@ if __name__ == "__main__":
     print(f"- 微信投资建议: {'有' if result['wechat_advice'] else '无'}")
     print(f"- 微博投资建议: {'有' if result['weibo_advice'] else '无'}")
     print(f"- 综合投资建议: {'有' if result['merged_advice'] else '无'}")
+    print(f"- 持仓分析: {'有' if result['position_result'] else '无'}")
+    print(f"- 持仓匹配: {'有' if result['match_result'] else '无'}")
     print(f"- 执行日期: {result['date']}")
