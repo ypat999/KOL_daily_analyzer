@@ -4,8 +4,10 @@
 
 ## 目录结构
 - `kol_analyzer.py`: 主程序入口，协调所有分析任务并合并投资建议
+- `cookie_validator.py`: 全平台统一登录与cookie验证模块
 - `bili_summary.py`: 提取B站UP主限定时间内视频并生成投资建议
 - `wechat_get.py`: 提取微信公众号限定时间内文章并生成投资建议
+- `wechat_login.py`: 微信公众号自动登录与cookie更新模块
 - `weibo_get.py`: 提取微博用户限定时间内内容并生成投资建议
 - `momentum_analyzer.py`: 提取重点关注标的并进行动量因子分析
 - `position_manager.py`: 持仓管理模块，支持持仓动量分析和KOL推荐匹配
@@ -16,7 +18,7 @@
 - `date_utils.py`: 统一的日期处理工具
 - `requirements.txt`: 项目依赖包列表
 - `bili_cookies.json`: B站登录凭证配置文件
-- `wechat_cookies.json`: 微信公众号登录凭证配置文件
+- `wechat_cookies.json`: 微信公众号登录凭证配置文件（JSON格式，含cookie和token）
 - `weibo_cookies.json`: 微博登录凭证配置文件
 - `deepseek_api_key.txt`: DeepSeek API密钥配置文件
 - `positions.json`: 持仓数据配置文件
@@ -99,34 +101,37 @@
 - `DedeUserID__ckMd5`: 用户ID的MD5值，必须包含
 - `sid`: 会话ID，建议包含
 
-### 2. 微信公众号Cookie配置文件 (`wechat_cookies.txt`)
+### 2. 微信公众号Cookie配置文件 (`wechat_cookies.json`)
 
 #### 文件内容结构
-```
-uin=your_uin_value; pass_ticket=your_pass_ticket_value; key=your_key_value; wxuin=your_wxuin_value; devicetype=your_devicetype_value; version=your_version_value; lang=zh_CN; 
+```json
+{
+    "cookie": "cookie_string_here; another_cookie=value;",
+    "token": "your_token_value_here"
+}
 ```
 
 #### 获取方式
-1. **浏览器获取**：
-   - 参考文章：https://zhuanlan.zhihu.com/p/714173074
+1. **自动获取（推荐）**：
+   - 运行`wechat_login.py`，程序会自动打开浏览器
+   - 扫码登录微信公众号平台（需注册一个公众号）
+   - 登录成功后，程序会自动提取cookie和token并保存到`wechat_cookies.json`
 
-   - 在浏览器中登录微信公众号平台（mp.weixin.qq.com，需注册一个公众号）
+2. **手动获取**：
+   - 在浏览器中登录微信公众号平台（mp.weixin.qq.com）
    - 打开开发者工具（F12）
-   - 切换到Application标签
-   - 在Storage → Cookies中找到mp.weixin.qq.com
-   - 复制所有Cookie值，保存到`wechat_cookies.txt`文件
+   - 切换到Network标签，刷新页面
+   - 找到任意请求，复制Cookie请求头的值作为`cookie`字段
+   - 从当前URL中提取`token`参数值作为`token`字段
+   - 将两个字段保存为JSON格式
 
-2. **关键Cookie字段说明**：
-   - `uin`: 用户标识符
-   - `pass_ticket`: 登录票据
-   - `key`: 访问密钥
-   - `wxuin`: 微信用户ID
-   - `devicetype`: 设备类型
-   - `version`: 版本号
+#### 关键字段说明
+- `cookie`: 微信公众号平台的完整Cookie字符串，用于API请求认证
+- `token`: 登录令牌，从登录后URL的`token`参数中获取
 
 #### 注意事项
-- Cookie值需要完整，缺少关键字段会导致请求失败
-- Cookie有一定有效期，过期后需要重新获取
+- Cookie和token都有有效期，过期后需要重新获取
+- 可通过`cookie_validator.py`统一验证cookie有效性
 - 建议使用Chrome或Firefox浏览器获取
 
 ### 3. DeepSeek API密钥配置文件 (`deepseek_api_key.txt`)
@@ -244,9 +249,12 @@ sk-your-api-key-here
    }
    ```
 
-2. **Cookie配置**：在`wechat_cookies.txt`文件中配置有效的微信公众号平台cookie
-   ```
-   uin=your_uin_value; pass_ticket=your_pass_ticket_value; key=your_key_value; wxuin=your_wxuin_value; devicetype=your_devicetype_value; version=your_version_value; lang=zh_CN; 
+2. **Cookie配置**：在`wechat_cookies.json`文件中配置有效的微信公众号平台cookie
+   ```json
+   {
+       "cookie": "your_cookie_string_here",
+       "token": "your_token_value_here"
+   }
    ```
 
 3. **DeepSeek API密钥**：确保`deepseek_api_key.txt`文件中的API密钥有效
@@ -268,9 +276,10 @@ sk-your-api-key-here
 ## 主程序 (kol_analyzer.py)
 
 ### 功能
-- 协调B站和微信公众号的分析任务
-- 同时运行两个任务以提高效率
-- 合并两个来源的投资建议生成综合分析报告
+- 启动时自动执行全平台统一登录验证
+- 协调B站、微信和微博的分析任务
+- 顺序运行三个平台的任务
+- 合并三个来源的投资建议生成综合分析报告
 - 按日期归档所有分析结果
 
 ### 使用方法
@@ -289,20 +298,29 @@ pip install -r requirements.txt
 
 ### 2. 配置文件设置
 1. 设置B站cookie (`bili_cookies.json`)
-2. 设置微信cookie (`wechat_cookies.txt`)
-3. 设置DeepSeek API密钥 (`deepseek_api_key.txt`)
-4. 根据需要调整UP主和公众号列表
+2. 设置微信cookie (`wechat_cookies.json`)
+3. 设置微博cookie (`weibo_cookies.json`)
+4. 设置DeepSeek API密钥 (`deepseek_api_key.txt`)
+5. 根据需要调整UP主和公众号列表
+
+> 也可以直接运行`python cookie_validator.py`进行全平台统一登录验证，程序会自动检测cookie有效性并引导登录。
 
 ### 3. 运行程序
 ```bash
-# 运行主程序（推荐）
+# 运行主程序（推荐，会自动执行统一登录验证）
 python kol_analyzer.py
+
+# 单独验证所有平台cookie
+python cookie_validator.py
 
 # 或单独运行B站分析
 python bili_summary.py
 
 # 或单独运行微信分析
 python wechat_get.py
+
+# 或单独运行微博分析
+python weibo_get.py
 ```
 
 ### 4. 查看结果
@@ -315,21 +333,23 @@ python wechat_get.py
 
 根据`procedure.txt`文件描述，项目的工作流程如下：
 
-1. 从B站获取固定几个UP主的限定时间内最新视频（周末运行时，收录周五收盘后所有时间的内容），提取字幕，交由DeepSeek分别总结
-2. 获取固定几个公众号的限定时间内最新文章（周末运行时，收录周五收盘后所有时间的内容），交由DeepSeek分别总结
-3. 获取微博用户的限定时间内内容（周末运行时，收录周五收盘后所有时间的内容），交由DeepSeek分别总结
-4. 从各来源投资建议中提取重点关注的指数和股票
-5. 使用akshare获取标的日K线数据，计算动量因子（20/60/120日收益率、趋势强度、突破信号）
-6. 结合持仓信息及联网信息，交由DeepSeek分析后续操作及应对
-7. 让DeepSeek每天输出实盘小技巧
+1. **统一登录验证**：启动时通过`cookie_validator.py`集中验证微博、B站、微信三个平台的cookie有效性，失效时提示手动登录
+2. 从B站获取固定几个UP主的限定时间内最新视频（周末运行时，收录周五收盘后所有时间的内容），提取字幕，交由DeepSeek分别总结
+3. 获取固定几个公众号的限定时间内最新文章（周末运行时，收录周五收盘后所有时间的内容），交由DeepSeek分别总结
+4. 获取微博用户的限定时间内内容（周末运行时，收录周五收盘后所有时间的内容），交由DeepSeek分别总结
+5. 从各来源投资建议中提取重点关注的指数和股票
+6. 使用yfinance（优先）/akshare（备用）获取标的日K线数据，计算动量因子（20/60/120日收益率、趋势强度、突破信号）
+7. 结合持仓信息及联网信息，交由DeepSeek分析后续操作及应对
+8. 让DeepSeek每天输出实盘小技巧
 
 ## 注意事项
 
-1. **Cookie有效期**：B站和微信的cookie都有一定有效期，过期后需要重新获取
+1. **Cookie有效期**：B站、微信和微博的cookie都有一定有效期，过期后需要重新获取。建议运行主程序前先执行`python cookie_validator.py`验证cookie有效性
 2. **API调用限制**：DeepSeek API可能有调用次数和频率限制，请合理使用
-3. **网络环境**：程序需要稳定的网络连接来访问B站、微信和DeepSeek API
-4. **浏览器依赖**：B站视频分析需要Chrome浏览器和对应的ChromeDriver
+3. **网络环境**：程序需要稳定的网络连接来访问B站、微信、微博和DeepSeek API
+4. **浏览器依赖**：B站视频分析和手动登录需要Chrome浏览器和对应的ChromeDriver
 5. **数据存储**：程序会生成大量数据文件，请确保有足够的磁盘空间
+6. **数据源切换**：动量分析默认使用yfinance获取数据，如果yfinance不可用会自动切换到akshare
 
 3. 运行脚本
    ```bash
@@ -386,8 +406,9 @@ python wechat_get.py
 ## 主程序入口 (kol_analyzer.py)
 
 ### 功能
+- 启动时自动执行全平台统一登录验证（通过`cookie_validator.py`）
 - 统一协调B站、微信和微博分析任务
-- 使用多线程并行执行三个平台的任务
+- 顺序执行三个平台的数据抓取任务
 - 智能合并三个来源的投资建议
 - 自动提取重点关注标的并进行动量分析
 - 自动进行持仓分析（动量+匹配）
@@ -402,13 +423,17 @@ python wechat_get.py
    ```
 
 ### 工作流程
-1. 并行执行B站视频分析、微信公众号文章分析和微博内容分析
-2. 收集三个平台的投资建议
-3. 从投资建议中提取重点关注标的
-4. 使用akshare获取标的K线数据，计算动量因子
-5. 使用DeepSeek API综合分析并生成统一的投资建议
-6. 分析持仓动量并与KOL推荐进行匹配
-7. 按日期保存所有分析结果到归档文件夹
+1. **统一登录验证**：启动时自动验证微博、B站、微信三个平台的cookie有效性
+   - 如果cookie有效，直接跳过登录
+   - 如果cookie失效，提示用户是否立即手动登录
+   - 也可单独运行`python cookie_validator.py`进行登录验证
+2. 顺序执行B站视频分析、微信公众号文章分析和微博内容分析
+3. 收集三个平台的投资建议
+4. 从投资建议中提取重点关注标的
+5. 使用yfinance（优先）/akshare（备用）获取标的K线数据，计算动量因子
+6. 使用DeepSeek API综合分析并生成统一的投资建议
+7. 分析持仓动量并与KOL推荐进行匹配
+8. 按日期保存所有分析结果到归档文件夹
 
 ### 输出文件
 运行后会在 `archive_YYYY-MM-DD/` 文件夹中生成：
@@ -475,6 +500,28 @@ subtitle = extract_subtitle_from_url(subtitle_url)
 extract_content_to_txt('input.json', 'output.txt')
 ```
 
+## 全平台统一登录模块 (cookie_validator.py)
+
+### 功能
+- 集中验证微博、B站、微信三个平台的cookie有效性
+- 微博：通过headless浏览器加载cookie后检测登录状态
+- B站：调用B站API检测登录状态并获取用户名
+- 微信：调用微信公众号API检测cookie和token有效性
+- 失效时引导用户手动登录，自动保存新cookie
+- 支持单独运行进行登录验证
+
+### 使用方法
+```bash
+# 验证所有平台cookie并引导登录
+python cookie_validator.py
+```
+
+在主程序中自动调用：
+```python
+from cookie_validator import perform_unified_login
+login_results = perform_unified_login()
+```
+
 ## 项目依赖 (requirements.txt)
 
 项目依赖以下核心库：
@@ -485,7 +532,8 @@ extract_content_to_txt('input.json', 'output.txt')
 - `blinker==1.6.2`: 信号处理库
 - `beautifulsoup4>=4.9.3`: HTML解析库
 - `openai`: OpenAI API客户端（用于DeepSeek）
-- `akshare>=1.12.0`: 中国股票市场数据获取（用于动量分析）
+- `yfinance>=1.3.0`: Yahoo Finance数据获取（动量分析优先数据源）
+- `akshare>=1.12.0`: 中国股票市场数据获取（动量分析备用数据源）
 - `pandas>=2.0.0`: 数据处理
 - `numpy>=1.24.0`: 数值计算
 
@@ -499,7 +547,9 @@ extract_content_to_txt('input.json', 'output.txt')
 
 ### 功能
 - 从各子模块投资建议中自动提取重点关注的指数和股票
-- 使用akshare获取标的的日K线数据
+- 使用yfinance（优先）/akshare（备用）获取标的的日K线数据
+- 自动清洗数据，去除NaN值（如当天盘中未收盘数据）
+- 自动识别ETF代码（5开头/15开头），使用正确的数据源获取方式
 - 计算常见动量因子：
   - 20日收益率
   - 60日收益率
@@ -509,10 +559,22 @@ extract_content_to_txt('input.json', 'output.txt')
 - 生成动量分析报告，与综合投资建议合并
 
 ### 依赖
-需要安装akshare库：
 ```bash
-pip install akshare
+pip install yfinance akshare
 ```
+
+### 数据源优先级
+1. **yfinance**（优先）：Yahoo Finance数据，稳定可靠，覆盖A股、ETF、指数
+2. **akshare**（备用）：东方财富数据源，当yfinance不可用时自动切换
+
+### yfinance代码映射规则
+| 代码前缀 | 交易所 | 后缀 | 示例 |
+|---------|--------|------|------|
+| 6开头 | 上交所 | .SS | 600598 → 600598.SS |
+| 0/3开头 | 深交所 | .SZ | 000858 → 000858.SZ |
+| 68开头 | 上交所 | .SS | 688981 → 688981.SS |
+| 5开头(ETF) | 上交所 | .SS | 512170 → 512170.SS |
+| 15开头(ETF) | 深交所 | .SZ | 159852 → 159852.SZ |
 
 ### 标的信息格式
 各子模块（B站、微信、微博）的投资建议会以统一JSON格式输出标的信息：

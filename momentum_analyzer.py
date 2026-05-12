@@ -3,7 +3,6 @@ import re
 import time
 from datetime import datetime, timedelta
 from deepseek_summary import deepseek_summary
-import akshare as ak
 import pandas as pd
 import numpy as np
 from urllib3.exceptions import HTTPError
@@ -14,6 +13,12 @@ try:
     YFINANCE_AVAILABLE = True
 except ImportError:
     YFINANCE_AVAILABLE = False
+
+try:
+    import akshare as ak
+    AKSHARE_AVAILABLE = True
+except ImportError:
+    AKSHARE_AVAILABLE = False
 
 _last_request_time = 0
 _request_interval = 1.0
@@ -36,6 +41,10 @@ def _convert_to_yfinance_code(code, is_index=False):
         return f"{code}.SZ"
     elif code.startswith("68"):
         return f"{code}.SS"
+    elif code.startswith("5"):
+        return f"{code}.SS"
+    elif code.startswith("1"):
+        return f"{code}.SZ"
     return f"{code}.SS"
 
 def _wait_for_rate_limit():
@@ -44,6 +53,41 @@ def _wait_for_rate_limit():
     if elapsed < _request_interval:
         time.sleep(_request_interval - elapsed)
     _last_request_time = time.time()
+
+def _clean_yfinance_df(df):
+    """清洗yfinance返回的DataFrame，去除NaN行，统一列名"""
+    if df is None or len(df) == 0:
+        return None
+    
+    df = df.reset_index()
+    df = df.rename(columns={
+        'Date': '日期',
+        'Open': '开盘',
+        'High': '最高',
+        'Low': '最低',
+        'Close': '收盘',
+        'Volume': '成交量'
+    })
+    
+    df['日期'] = pd.to_datetime(df['日期'])
+    
+    df = df.dropna(subset=['收盘'])
+    
+    if len(df) == 0:
+        return None
+    
+    df = df.sort_values('日期').reset_index(drop=True)
+    return df
+
+def _clean_akshare_df(df):
+    """清洗akshare返回的DataFrame"""
+    if df is None or len(df) == 0:
+        return None
+    
+    df['日期'] = pd.to_datetime(df['日期'])
+    df = df.dropna(subset=['收盘'])
+    df = df.sort_values('日期').reset_index(drop=True)
+    return df
 
 
 def parse_targets_from_text(text):
@@ -204,82 +248,98 @@ def merge_targets(all_targets):
     return result
 
 
+def _is_etf_code(code):
+    """判断代码是否为ETF代码"""
+    return code.startswith("5") or code.startswith("15")
+
 def get_index_kline(code, days=150, max_retries=3):
-    """获取指数日K线数据
+    """获取指数/ETF日K线数据（yfinance优先，akshare备用）
     
     Args:
-        code: 指数代码
+        code: 指数或ETF代码
         days: 获取的天数
         max_retries: 最大重试次数
     
     Returns:
         DataFrame: K线数据
     """
-    for attempt in range(max_retries):
-        try:
-            _wait_for_rate_limit()
-            
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-            
-            df = ak.index_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date
-            )
-            
-            if df is not None and len(df) > 0:
-                df['日期'] = pd.to_datetime(df['日期'])
-                df = df.sort_values('日期')
-                return df
-            return None
-        except (requests.exceptions.ConnectionError, 
-                requests.exceptions.Timeout,
-                HTTPError,
-                ConnectionError,
-                Exception) as e:
-            error_msg = str(e)
-            if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg:
-                if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2
-                    print(f"获取指数 {code} 连接失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
-                    time.sleep(wait_time)
-                    continue
-            print(f"akshare 获取指数 {code} K线数据失败: {e}")
-            break
+    is_etf = _is_etf_code(code)
     
     if YFINANCE_AVAILABLE:
-        print(f"尝试使用 yfinance 获取指数 {code} 数据...")
-        try:
-            yf_code = _convert_to_yfinance_code(code, is_index=True)
-            ticker = yf.Ticker(yf_code)
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
-            df = ticker.history(start=start_date, end=end_date)
-            
-            if df is not None and len(df) > 0:
-                df = df.reset_index()
-                df = df.rename(columns={
-                    'Date': '日期',
-                    'Open': '开盘',
-                    'High': '最高',
-                    'Low': '最低',
-                    'Close': '收盘',
-                    'Volume': '成交量'
-                })
-                df['日期'] = pd.to_datetime(df['日期'])
-                df = df.sort_values('日期')
-                print(f"yfinance 获取指数 {code} 数据成功")
-                return df
-        except Exception as e:
-            print(f"yfinance 获取指数 {code} 数据也失败: {e}")
+        for attempt in range(max_retries):
+            try:
+                yf_code = _convert_to_yfinance_code(code, is_index=(not is_etf))
+                ticker = yf.Ticker(yf_code)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                df = ticker.history(start=start_date, end=end_date)
+                
+                df = _clean_yfinance_df(df)
+                if df is not None and len(df) > 0:
+                    source_type = "ETF" if is_etf else "指数"
+                    print(f"yfinance 获取{source_type} {code} 数据成功 ({len(df)}条)")
+                    return df
+                
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"yfinance 获取指数 {code} 数据为空，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"yfinance 获取指数 {code} 失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    print(f"yfinance 获取指数 {code} 数据失败: {e}")
     
+    if AKSHARE_AVAILABLE:
+        print(f"尝试使用 akshare 获取指数 {code} 数据...")
+        for attempt in range(max_retries):
+            try:
+                _wait_for_rate_limit()
+                
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+                
+                df = ak.index_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                
+                df = _clean_akshare_df(df)
+                if df is not None and len(df) > 0:
+                    print(f"akshare 获取指数 {code} 数据成功 ({len(df)}条)")
+                    return df
+                
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"akshare 获取指数 {code} 数据为空，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+            except (requests.exceptions.ConnectionError, 
+                    requests.exceptions.Timeout,
+                    HTTPError,
+                    ConnectionError,
+                    Exception) as e:
+                error_msg = str(e)
+                if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2
+                        print(f"akshare 获取指数 {code} 连接失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                print(f"akshare 获取指数 {code} K线数据失败: {e}")
+                break
+    else:
+        print("akshare 不可用，跳过备用数据源")
+    
+    print(f"所有数据源均无法获取指数 {code} 数据")
     return None
 
 
 def get_stock_kline(code, days=150, max_retries=3):
-    """获取股票日K线数据
+    """获取股票日K线数据（yfinance优先，akshare备用）
     
     Args:
         code: 股票代码
@@ -289,67 +349,76 @@ def get_stock_kline(code, days=150, max_retries=3):
     Returns:
         DataFrame: K线数据
     """
-    for attempt in range(max_retries):
-        try:
-            _wait_for_rate_limit()
-            
-            end_date = datetime.now().strftime("%Y%m%d")
-            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-            
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=start_date,
-                end_date=end_date,
-                adjust="qfq"
-            )
-            
-            if df is not None and len(df) > 0:
-                df['日期'] = pd.to_datetime(df['日期'])
-                df = df.sort_values('日期')
-                return df
-            return None
-        except (requests.exceptions.ConnectionError, 
-                requests.exceptions.Timeout,
-                HTTPError,
-                ConnectionError,
-                Exception) as e:
-            error_msg = str(e)
-            if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg:
+    if YFINANCE_AVAILABLE:
+        for attempt in range(max_retries):
+            try:
+                yf_code = _convert_to_yfinance_code(code, is_index=False)
+                ticker = yf.Ticker(yf_code)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                df = ticker.history(start=start_date, end=end_date)
+                
+                df = _clean_yfinance_df(df)
+                if df is not None and len(df) > 0:
+                    print(f"yfinance 获取股票 {code} 数据成功 ({len(df)}条)")
+                    return df
+                
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2
-                    print(f"获取股票 {code} 连接失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                    print(f"yfinance 获取股票 {code} 数据为空，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
                     time.sleep(wait_time)
-                    continue
-            print(f"akshare 获取股票 {code} K线数据失败: {e}")
-            break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"yfinance 获取股票 {code} 失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    print(f"yfinance 获取股票 {code} 数据失败: {e}")
     
-    if YFINANCE_AVAILABLE:
-        print(f"尝试使用 yfinance 获取股票 {code} 数据...")
-        try:
-            yf_code = _convert_to_yfinance_code(code, is_index=False)
-            ticker = yf.Ticker(yf_code)
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
-            df = ticker.history(start=start_date, end=end_date)
-            
-            if df is not None and len(df) > 0:
-                df = df.reset_index()
-                df = df.rename(columns={
-                    'Date': '日期',
-                    'Open': '开盘',
-                    'High': '最高',
-                    'Low': '最低',
-                    'Close': '收盘',
-                    'Volume': '成交量'
-                })
-                df['日期'] = pd.to_datetime(df['日期'])
-                df = df.sort_values('日期')
-                print(f"yfinance 获取股票 {code} 数据成功")
-                return df
-        except Exception as e:
-            print(f"yfinance 获取股票 {code} 数据也失败: {e}")
+    if AKSHARE_AVAILABLE:
+        print(f"尝试使用 akshare 获取股票 {code} 数据...")
+        for attempt in range(max_retries):
+            try:
+                _wait_for_rate_limit()
+                
+                end_date = datetime.now().strftime("%Y%m%d")
+                start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+                
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq"
+                )
+                
+                df = _clean_akshare_df(df)
+                if df is not None and len(df) > 0:
+                    print(f"akshare 获取股票 {code} 数据成功 ({len(df)}条)")
+                    return df
+                
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    print(f"akshare 获取股票 {code} 数据为空，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+            except (requests.exceptions.ConnectionError, 
+                    requests.exceptions.Timeout,
+                    HTTPError,
+                    ConnectionError,
+                    Exception) as e:
+                error_msg = str(e)
+                if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2
+                        print(f"akshare 获取股票 {code} 连接失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                print(f"akshare 获取股票 {code} K线数据失败: {e}")
+                break
+    else:
+        print("akshare 不可用，跳过备用数据源")
     
+    print(f"所有数据源均无法获取股票 {code} 数据")
     return None
 
 
