@@ -11,6 +11,7 @@ from prediction_recorder import record_predictions_from_advice, generate_yesterd
 from position_manager import run_position_analysis, list_positions, load_positions
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
+from market_breadth import run_market_breadth_analysis
 
 class KOLAnalyzer:
     """KOL分析器主类，用于执行各平台任务并合并投资建议"""
@@ -163,6 +164,15 @@ class KOLAnalyzer:
         if yesterday_review:
             combined_content += f"=== 昨日预测复盘 ===\n{yesterday_review}\n\n"
             print("已注入昨日预测复盘到合并prompt")
+        
+        # 市场宽度分析
+        try:
+            market_breadth_report = run_market_breadth_analysis()
+            if market_breadth_report:
+                combined_content += f"=== 市场宽度分析 ===\n{market_breadth_report}\n\n"
+                print("已注入市场宽度分析到合并prompt")
+        except Exception as e:
+            print(f"市场宽度分析失败（不影响主流程）: {e}")
         
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
