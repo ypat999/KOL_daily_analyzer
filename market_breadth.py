@@ -173,6 +173,100 @@ def get_index_ma_deviation():
     return results
 
 
+def get_dragon_tiger_list():
+    """获取龙虎榜数据
+    
+    Returns:
+        dict: 龙虎榜个股及买卖席位
+    """
+    if not AKSHARE_AVAILABLE:
+        return None
+    
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        # 龙虎榜个股明细
+        df = ak.stock_lhb_detail_em(
+            start_date=today,
+            end_date=today,
+        )
+        if df is None or df.empty:
+            # 尝试最近交易日
+            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+            df = ak.stock_lhb_detail_em(
+                start_date=yesterday,
+                end_date=yesterday,
+            )
+        
+        if df is None or df.empty:
+            return None
+        
+        # 取前10只
+        top_items = []
+        for _, row in df.head(10).iterrows():
+            item = {
+                "code": str(row.get("代码", "")),
+                "name": str(row.get("名称", "")),
+                "reason": str(row.get("上榜原因", "")),
+                "net_buy": row.get("龙虎榜净买额", row.get("净买额", 0)),
+            }
+            if isinstance(item["net_buy"], (int, float)):
+                item["net_buy"] = round(float(item["net_buy"]) / 1e8, 2)  # 转为亿元
+            top_items.append(item)
+        
+        return {
+            "date": today,
+            "count": len(df),
+            "top_items": top_items,
+        }
+    except Exception as e:
+        print(f"获取龙虎榜数据失败: {e}")
+        return None
+
+
+def get_limit_up_pool_detail():
+    """获取涨停板池详情（含连板信息）
+    
+    Returns:
+        dict: 涨停股详情
+    """
+    if not AKSHARE_AVAILABLE:
+        return None
+    
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        df = ak.stock_zt_pool_em(date=today)
+        if df is None or df.empty:
+            return None
+        
+        # 按连板数排序
+        if "连板数" in df.columns:
+            df = df.sort_values("连板数", ascending=False)
+        
+        top_items = []
+        for _, row in df.head(15).iterrows():
+            item = {
+                "code": str(row.get("代码", "")),
+                "name": str(row.get("名称", "")),
+                "price": row.get("最新价", 0),
+                "change_pct": row.get("涨跌幅", 0),
+                "consecutive_boards": int(row.get("连板数", 1)),
+                "turnover": row.get("成交额", 0),
+                "first_limit_time": str(row.get("首次封板时间", "")),
+                "final_limit_time": str(row.get("最后封板时间", "")),
+                "open_times": row.get("炸板次数", 0),
+            }
+            top_items.append(item)
+        
+        return {
+            "date": today,
+            "total_count": len(df),
+            "top_items": top_items,
+        }
+    except Exception as e:
+        print(f"获取涨停板池详情失败: {e}")
+        return None
+
+
 def calculate_market_temperature(limit_stats, north_flow, index_deviations):
     """计算市场情绪温度计（0-100）
     
@@ -260,6 +354,10 @@ def run_market_breadth_analysis():
     index_deviations = get_index_ma_deviation()
     temperature = calculate_market_temperature(limit_stats, north_flow, index_deviations)
     
+    # 龙虎榜和涨停板池详情
+    dragon_tiger = get_dragon_tiger_list()
+    limit_up_detail = get_limit_up_pool_detail()
+    
     lines = []
     lines.append("=" * 60)
     lines.append("市场宽度分析报告")
@@ -279,6 +377,16 @@ def run_market_breadth_analysis():
     else:
         lines.append(f"\n【涨跌停统计】数据获取失败")
     
+    # 涨停板池详情
+    if limit_up_detail and limit_up_detail.get("top_items"):
+        lines.append(f"\n【涨停板池详情（按连板数排序，前15）】")
+        for item in limit_up_detail["top_items"]:
+            lines.append(
+                f"  {item['name']}({item['code']}) | {item['consecutive_boards']}连板 | "
+                f"涨幅{item['change_pct']}% | 炸板{item['open_times']}次 | "
+                f"首封{item['first_limit_time']}"
+            )
+    
     # 北向资金
     if north_flow:
         lines.append(f"\n【北向资金】")
@@ -297,6 +405,17 @@ def run_market_breadth_analysis():
             )
     else:
         lines.append(f"\n【指数均线偏离度】数据获取失败")
+    
+    # 龙虎榜
+    if dragon_tiger and dragon_tiger.get("top_items"):
+        lines.append(f"\n【龙虎榜（前10）】")
+        for item in dragon_tiger["top_items"]:
+            net_buy_str = f"净买{item['net_buy']}亿" if isinstance(item.get("net_buy"), (int, float)) else ""
+            lines.append(
+                f"  {item['name']}({item['code']}) | {item['reason']} | {net_buy_str}"
+            )
+    else:
+        lines.append(f"\n【龙虎榜】数据获取失败或无数据")
     
     lines.append("\n" + "=" * 60)
     
