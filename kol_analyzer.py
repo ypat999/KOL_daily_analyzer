@@ -13,6 +13,7 @@ from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
 from signal_knowledge_base import format_kb_summary_for_prompt, record_signals_from_analysis, update_signal_outcomes
+from advice_history import format_history_for_prompt, record_advice
 
 class KOLAnalyzer:
     """KOL分析器主类，用于执行各平台任务并合并投资建议"""
@@ -195,6 +196,15 @@ class KOLAnalyzer:
         except Exception as e:
             print(f"信号知识库更新失败（不影响主流程）: {e}")
         
+        # 建议历史：注入过去N天观点，避免反复
+        try:
+            history_text = format_history_for_prompt(days=7)
+            if history_text:
+                combined_content += f"=== 过去7天建议历史 ===\n{history_text}\n\n"
+                print("已注入建议历史到合并prompt")
+        except Exception as e:
+            print(f"建议历史加载失败（不影响主流程）: {e}")
+        
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
         try:
@@ -319,6 +329,12 @@ class KOLAnalyzer:
                 )
             except Exception as e:
                 print(f"记录信号事件到知识库失败（不影响主流程）: {e}")
+            
+            # 记录当日建议到历史（用于多日连续性追踪）
+            try:
+                record_advice(self.current_date, merged_advice)
+            except Exception as e:
+                print(f"记录建议历史失败（不影响主流程）: {e}")
             
             print("投资建议合并完成")
             return merged_advice
