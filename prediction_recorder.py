@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from deepseek_summary import deepseek_summary
 
 
@@ -13,6 +13,139 @@ CHANNEL_LABELS = {
     "wechat": "微信公众号",
     "merged": "综合分析",
 }
+
+
+def find_previous_archive_folder(current_date_str, base_dir="."):
+    """查找上一个有预测记录的归档目录
+    
+    Args:
+        current_date_str: 当前分析日期 'YYYY-MM-DD'
+        base_dir: 基础目录
+    
+    Returns:
+        tuple: (archive_folder, date_str) 或 None
+    """
+    try:
+        current_date = datetime.strptime(current_date_str, "%Y-%m-%d")
+    except ValueError:
+        return None
+    
+    # 向前查找最多14天
+    for i in range(1, 15):
+        check_date = current_date - timedelta(days=i)
+        date_str = check_date.strftime("%Y-%m-%d")
+        folder = os.path.join(base_dir, f"archive_{date_str}")
+        if os.path.isdir(folder):
+            # 检查是否有预测文件
+            has_preds = any(f.startswith("predictions_") and f.endswith(".json") 
+                          for f in os.listdir(folder))
+            if has_preds:
+                return folder, date_str
+    
+    return None
+
+
+def generate_yesterday_review(current_date_str, base_dir="."):
+    """生成昨日预测复盘报告
+    
+    加载上一个交易日的预测记录，获取实际行情数据，对照复盘。
+    
+    Args:
+        current_date_str: 当前分析日期 'YYYY-MM-DD'
+        base_dir: 基础目录
+    
+    Returns:
+        str: 复盘报告文本，无数据时返回空字符串
+    """
+    prev = find_previous_archive_folder(current_date_str, base_dir)
+    if not prev:
+        print("未找到上一个有预测记录的归档目录，跳过昨日复盘")
+        return ""
+    
+    prev_folder, prev_date = prev
+    print(f"加载昨日预测记录: {prev_date}")
+    
+    preds = load_predictions(prev_folder)
+    if not preds:
+        print("昨日无预测记录，跳过复盘")
+        return ""
+    
+    # 延迟导入避免循环依赖
+    from backtest_analyzer import get_actual_performance, score_prediction
+    
+    channel_label = {"bili": "B站", "weibo": "微博", "wechat": "微信", "merged": "综合"}
+    
+    review_lines = []
+    review_lines.append("=" * 60)
+    review_lines.append(f"昨日预测复盘（{prev_date}）")
+    review_lines.append("=" * 60)
+    
+    correct_count = 0
+    wrong_count = 0
+    no_data_count = 0
+    reviewed = 0
+    
+    for pred in preds:
+        target = pred.get("target", "")
+        target_type = pred.get("target_type", "")
+        direction = pred.get("direction", "")
+        channel = pred.get("channel", "")
+        blogger = pred.get("blogger", "")
+        reason = pred.get("reason", "")
+        
+        if not target or target_type not in ("index", "stock"):
+            continue
+        
+        # 计算从预测日到今天的表现
+        actual = get_actual_performance(target, target_type, prev_date, horizon=1)
+        
+        if actual is None:
+            no_data_count += 1
+            continue
+        
+        reviewed += 1
+        score = score_prediction(pred, actual)
+        ret = actual["return_pct"]
+        
+        dir_label = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}.get(direction, direction)
+        ch_label = channel_label.get(channel, channel)
+        
+        # 判断对错
+        is_correct = False
+        if direction == "bullish" and ret > 0:
+            is_correct = True
+        elif direction == "bearish" and ret < 0:
+            is_correct = True
+        elif direction == "neutral" and abs(ret) < 1:
+            is_correct = True
+        
+        if is_correct:
+            correct_count += 1
+            mark = "✓ 正确"
+        else:
+            wrong_count += 1
+            mark = "✗ 错误"
+        
+        review_lines.append(
+            f"  {mark} | {ch_label}「{blogger}」{dir_label} {target} | "
+            f"预测理由: {reason[:30]} | 实际: {ret:+.2f}%"
+        )
+    
+    if reviewed == 0:
+        review_lines.append("  无可复盘的预测（均为板块类或无数据）")
+    else:
+        total = correct_count + wrong_count
+        hit_rate = correct_count / total * 100 if total > 0 else 0
+        review_lines.append("-" * 60)
+        review_lines.append(
+            f"  复盘统计: {reviewed}条已验证 | 正确{correct_count} | 错误{wrong_count} | "
+            f"无数据{no_data_count} | 命中率{hit_rate:.0f}%"
+        )
+        review_lines.append("  提示：请根据昨日预测对错情况，修正今日判断方向。")
+    
+    review_lines.append("=" * 60)
+    
+    return "\n".join(review_lines)
 
 
 def extract_predictions(content, channel, blogger, date_str):

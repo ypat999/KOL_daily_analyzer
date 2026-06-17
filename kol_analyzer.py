@@ -7,7 +7,7 @@ from wechat_get import run_wechat_task
 from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
-from prediction_recorder import record_predictions_from_advice
+from prediction_recorder import record_predictions_from_advice, generate_yesterday_review
 from position_manager import run_position_analysis, list_positions, load_positions
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
@@ -158,6 +158,12 @@ class KOLAnalyzer:
             combined_content += f"=== 博主历史预测命中率 ===\n{backtest_summary}\n\n"
             print("已注入博主回测命中率到合并prompt")
         
+        # 生成昨日预测复盘
+        yesterday_review = generate_yesterday_review(self.current_date)
+        if yesterday_review:
+            combined_content += f"=== 昨日预测复盘 ===\n{yesterday_review}\n\n"
+            print("已注入昨日预测复盘到合并prompt")
+        
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
         try:
@@ -197,19 +203,24 @@ class KOLAnalyzer:
                     "以下是来自三大平台的投资分析与动量数据，请汇编成最终投资作战方案：\n\n"
                     "请按以下结构输出：\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    "第一部分：信息综述\n"
+                    "第一部分：昨日复盘（如有）\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "对照昨日预测与实际行情，指出哪些判断正确、哪些错误，并分析错误原因，"
+                    "说明今日是否需要修正方向。如无昨日复盘数据则跳过本部分。\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "第二部分：信息综述\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "【B站信号摘要】核心观点和共识方向\n"
                     "【微信信号摘要】核心逻辑和产业链判断\n"
                     "【微博信号摘要】市场情绪和资金动向\n"
                     "【动量验证】技术面是否支持上述判断\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    "第二部分：三源交叉验证矩阵\n"
+                    "第三部分：三源交叉验证矩阵\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "用表格列示各来源对核心议题的立场（B站/微信/微博/动量），"
                     "标注共识数量和分歧点，红色标记高度共识的方向。\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    "第三部分：最终交易决策\n"
+                    "第四部分：最终交易决策\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "★ 总仓位建议：XX%（激进/中性/保守）\n"
                     "★ 入场/离场决策：Go / No-Go\n"
@@ -218,7 +229,7 @@ class KOLAnalyzer:
                     "  - 方向2：...\n"
                     "★ 对冲/防御配置：\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    "第四部分：风险预案\n"
+                    "第五部分：风险预案\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "- Plan A（基准情景）：概率XX%，操作...\n"
                     "- Plan B（上行风险）：概率XX%，触发条件...\n"
