@@ -665,5 +665,90 @@ def run_backtest(months=2, eval_horizon=EVAL_HORIZON_DAYS):
     return blogger_stats, df
 
 
+def load_latest_backtest_stats():
+    """加载最近一次回测的博主命中率统计
+    
+    从最新的 backtest_detail_*.csv 文件中聚合计算每个博主的命中率，
+    供合并投资建议时动态调整权重使用。
+    
+    Returns:
+        dict: {channel::blogger: {"hit_rate": float, "avg_score": float, "count": int}}
+    """
+    import glob
+    
+    csv_files = sorted(glob.glob("backtest_detail_*.csv"), reverse=True)
+    if not csv_files:
+        return {}
+    
+    try:
+        df = pd.read_csv(csv_files[0], encoding="utf-8-sig")
+    except Exception as e:
+        print(f"加载回测明细失败: {e}")
+        return {}
+    
+    if df.empty:
+        return {}
+    
+    stats = {}
+    grouped = df.groupby(["channel", "blogger"])
+    for (channel, blogger), group in grouped:
+        hit_rate = (group["direction_score"] >= 30).sum() / len(group) * 100 if len(group) > 0 else 0
+        avg_score = group["total_score"].mean()
+        stats[f"{channel}::{blogger}"] = {
+            "hit_rate": round(hit_rate, 1),
+            "avg_score": round(avg_score, 1),
+            "count": len(group),
+            "avg_return": round(group["actual_return"].mean(), 2),
+        }
+    
+    return stats
+
+
+def format_backtest_summary_for_prompt(stats):
+    """将回测命中率格式化为可注入LLM prompt的文本
+    
+    Args:
+        stats: load_latest_backtest_stats() 返回的字典
+    
+    Returns:
+        str: 格式化的博主表现摘要文本
+    """
+    if not stats:
+        return ""
+    
+    channel_label = {"bili": "B站", "weibo": "微博", "wechat": "微信", "merged": "综合"}
+    
+    lines = ["【各博主历史预测命中率（来自最近回测）】"]
+    lines.append("-" * 50)
+    
+    # 按命中率排序
+    sorted_stats = sorted(stats.items(), key=lambda x: x[1]["hit_rate"], reverse=True)
+    
+    for key, s in sorted_stats:
+        parts = key.split("::", 1)
+        if len(parts) != 2:
+            continue
+        channel, blogger = parts
+        ch_label = channel_label.get(channel, channel)
+        
+        # 根据命中率给出权重调整建议
+        if s["hit_rate"] >= 60:
+            rating = "★★★ 高可信"
+        elif s["hit_rate"] >= 40:
+            rating = "★★ 中等可信"
+        else:
+            rating = "★ 低可信，观点需打折"
+        
+        lines.append(
+            f"  {ch_label}「{blogger}」: 命中率{s['hit_rate']}% | "
+            f"平均分{s['avg_score']} | 样本{s['count']}条 | 平均收益{s['avg_return']}% | {rating}"
+        )
+    
+    lines.append("-" * 50)
+    lines.append("提示：请根据上述命中率动态调整各博主观点的权重，低命中率博主的观点需更多交叉验证。")
+    
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     run_backtest(months=2, eval_horizon=5)

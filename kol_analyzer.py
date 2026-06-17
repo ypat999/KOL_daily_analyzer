@@ -10,6 +10,7 @@ from momentum_analyzer import run_momentum_analysis
 from prediction_recorder import record_predictions_from_advice
 from position_manager import run_position_analysis, list_positions, load_positions
 from cookie_validator import perform_unified_login
+from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 
 class KOLAnalyzer:
     """KOL分析器主类，用于执行各平台任务并合并投资建议"""
@@ -150,20 +151,41 @@ class KOLAnalyzer:
         if momentum_report:
             combined_content += f"=== 重点关注标的动量分析 ===\n{momentum_report}\n\n"
         
+        # 加载回测命中率统计，动态调整博主权重
+        backtest_stats = load_latest_backtest_stats()
+        backtest_summary = format_backtest_summary_for_prompt(backtest_stats)
+        if backtest_summary:
+            combined_content += f"=== 博主历史预测命中率 ===\n{backtest_summary}\n\n"
+            print("已注入博主回测命中率到合并prompt")
+        
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
         try:
+            # 根据是否有回测数据动态构建权重说明
+            if backtest_stats:
+                weight_guidance = (
+                    "信息源权重分配（已根据历史回测命中率动态调整）：\n"
+                    "- 请参考下方「博主历史预测命中率」数据，对低命中率博主的观点降权，高命中率博主升权\n"
+                    "- 命中率<40%的博主观点仅作参考，不作为核心交易依据\n"
+                    "- 命中率>60%的博主观点可作为核心信号源\n"
+                    "- 动量数据（客观技术面）：用于验证或证伪上述主观判断，权重不低于15%\n\n"
+                )
+            else:
+                weight_guidance = (
+                    "信息源特征与权重分配（默认，尚无回测数据）：\n"
+                    "- B站来源（权重30%）：视频UP主观点，信息密度高但质量参差，侧重发现非共识机会\n"
+                    "- 微信来源（权重40%）：专业公众号深度文章，逻辑性最强，侧重基本面和中长期判断\n"
+                    "- 微博来源（权重20%）：大V实时情绪和资金动向，侧重市场温度和短期博弈\n"
+                    "- 动量数据（权重10%）：客观技术面指标，用于验证或证伪上述主观判断\n\n"
+                )
+            
             merged_advice = deepseek_summary(
                 combined_content,
                 sysprompt=(
                     "你是首席投资策略官，拥有20年多资产配置经验，曾管理超百亿规模组合。"
                     "你的核心职责是将来自B站（视频分析）、微信（深度文章）、微博（市场情绪）三个信息源的投资洞见，"
                     "结合动量分析技术指标，汇编成一份可以直接指导交易的终极投资决策报告。\n\n"
-                    "信息源特征与权重分配：\n"
-                    "- B站来源（权重30%）：视频UP主观点，信息密度高但质量参差，侧重发现非共识机会\n"
-                    "- 微信来源（权重40%）：专业公众号深度文章，逻辑性最强，侧重基本面和中长期判断\n"
-                    "- 微博来源（权重20%）：大V实时情绪和资金动向，侧重市场温度和短期博弈\n"
-                    "- 动量数据（权重10%）：客观技术面指标，用于验证或证伪上述主观判断\n\n"
+                    + weight_guidance +
                     "决策框架：\n"
                     "1. 三源交叉验证，只有被2个以上来源共同支持的方向才作为核心交易方向\n"
                     "2. 技术面必须与基本面/情绪面方向一致时才入场，背离时必须解释原因\n"
