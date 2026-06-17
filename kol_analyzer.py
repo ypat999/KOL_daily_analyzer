@@ -8,7 +8,7 @@ from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
 from prediction_recorder import record_predictions_from_advice, generate_yesterday_review
-from position_manager import run_position_analysis, list_positions, load_positions
+from position_manager import run_position_analysis, list_positions, load_positions, calculate_portfolio_risk, format_portfolio_risk_report
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
@@ -173,6 +173,16 @@ class KOLAnalyzer:
                 print("已注入市场宽度分析到合并prompt")
         except Exception as e:
             print(f"市场宽度分析失败（不影响主流程）: {e}")
+        
+        # 持仓组合风险分析
+        try:
+            risk_data = calculate_portfolio_risk()
+            if risk_data:
+                risk_report = format_portfolio_risk_report(risk_data)
+                combined_content += f"=== 持仓组合风险分析 ===\n{risk_report}\n\n"
+                print("已注入持仓组合风险分析到合并prompt")
+        except Exception as e:
+            print(f"持仓组合风险分析失败（不影响主流程）: {e}")
         
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         

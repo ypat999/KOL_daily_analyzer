@@ -397,6 +397,237 @@ def format_match_report(match_results):
     
     return "\n".join(report_lines)
 
+def calculate_portfolio_risk(positions=None):
+    """计算持仓组合风险
+    
+    包含：
+    1. 仓位集中度（单一标的占比）
+    2. 板块集中度
+    3. 组合最大回撤
+    4. 持仓间相关性
+    5. 组合Beta（相对大盘）
+    
+    Args:
+        positions: 持仓数据，默认从文件加载
+    
+    Returns:
+        dict: 组合风险分析结果
+    """
+    import numpy as np
+    
+    if positions is None:
+        positions = load_positions()
+    
+    stocks = positions.get("stocks", [])
+    if not stocks:
+        return None
+    
+    # 1. 仓位集中度
+    total_value = 0
+    position_values = []
+    for s in stocks:
+        df = get_stock_kline(s["code"], days=5)
+        if df is not None and len(df) > 0:
+            current_price = float(df['收盘'].iloc[-1])
+        else:
+            current_price = s["cost_price"]
+        value = current_price * s["shares"]
+        position_values.append({
+            "code": s["code"],
+            "name": s["name"],
+            "value": round(value, 2),
+            "weight": 0,  # 稍后计算
+        })
+        total_value += value
+    
+    if total_value == 0:
+        return None
+    
+    for pv in position_values:
+        pv["weight"] = round(pv["value"] / total_value * 100, 2)
+    
+    # 按权重排序
+    position_values.sort(key=lambda x: x["weight"], reverse=True)
+    max_weight = position_values[0]["weight"] if position_values else 0
+    top3_weight = sum(pv["weight"] for pv in position_values[:3])
+    
+    # 2. 板块集中度（用代码前3位粗略分组，实际应查板块归属）
+    sector_map = {}
+    for s in stocks:
+        # 简化：用代码前3位作为板块代理
+        sector = s["code"][:3]
+        sector_map.setdefault(sector, []).append(s["name"])
+    sector_concentration = {
+        sector: len(names) for sector, names in sector_map.items()
+    }
+    max_sector_count = max(sector_concentration.values()) if sector_concentration else 0
+    sector_concentration_ratio = max_sector_count / len(stocks) * 100 if stocks else 0
+    
+    # 3. 组合最大回撤 & 4. 相关性 & 5. Beta
+    # 获取每只股票的历史收益率序列
+    returns_data = {}
+    benchmark_returns = None
+    
+    # 获取基准（上证指数）收益率
+    try:
+        bench_df = get_index_kline("000001", days=60)
+        if bench_df is not None and len(bench_df) > 20:
+            bench_close = bench_df['收盘'].values.astype(float)
+            benchmark_returns = np.diff(bench_close) / bench_close[:-1]
+    except Exception:
+        pass
+    
+    for s in stocks:
+        try:
+            df = get_stock_kline(s["code"], days=60)
+            if df is not None and len(df) > 20:
+                close = df['收盘'].values.astype(float)
+                returns = np.diff(close) / close[:-1]
+                returns_data[s["code"]] = returns
+        except Exception:
+            continue
+    
+    # 组合等权收益率
+    portfolio_returns = None
+    if returns_data:
+        min_len = min(len(r) for r in returns_data.values())
+        aligned_returns = np.column_stack([r[-min_len:] for r in returns_data.values()])
+        portfolio_returns = np.mean(aligned_returns, axis=1)
+    
+    # 最大回撤
+    max_drawdown = 0
+    if portfolio_returns is not None and len(portfolio_returns) > 0:
+        cum_returns = np.cumprod(1 + portfolio_returns)
+        running_max = np.maximum.accumulate(cum_returns)
+        drawdowns = (cum_returns - running_max) / running_max
+        max_drawdown = float(np.min(drawdowns)) * 100
+    
+    # 相关性矩阵
+    correlation_matrix = None
+    if len(returns_data) >= 2:
+        min_len = min(len(r) for r in returns_data.values())
+        aligned = np.column_stack([r[-min_len:] for r in returns_data.values()])
+        if aligned.shape[1] >= 2:
+            corr = np.corrcoef(aligned, rowvar=False)
+            codes = list(returns_data.keys())
+            correlation_matrix = {
+                "codes": codes,
+                "matrix": np.round(corr, 2).tolist(),
+            }
+            # 平均相关性（排除对角线）
+            n = corr.shape[0]
+            if n > 1:
+                off_diag = corr[~np.eye(n, dtype=bool)]
+                avg_correlation = float(np.mean(off_diag))
+            else:
+                avg_correlation = 0
+        else:
+            avg_correlation = 0
+    else:
+        avg_correlation = 0
+    
+    # 组合Beta
+    portfolio_beta = None
+    if portfolio_returns is not None and benchmark_returns is not None:
+        min_len = min(len(portfolio_returns), len(benchmark_returns))
+        if min_len > 10:
+            port = portfolio_returns[-min_len:]
+            bench = benchmark_returns[-min_len:]
+            bench_var = np.var(bench)
+            if bench_var > 0:
+                portfolio_beta = float(np.cov(port, bench)[0, 1] / bench_var)
+    
+    # 风险评级
+    risk_warnings = []
+    if max_weight > 30:
+        risk_warnings.append(f"单一标的「{position_values[0]['name']}」占比{max_weight}%过高（>30%）")
+    if top3_weight > 60:
+        risk_warnings.append(f"前三大持仓占比{top3_weight}%过高（>60%）")
+    if sector_concentration_ratio > 50:
+        risk_warnings.append(f"板块集中度{sector_concentration_ratio:.0f}%过高")
+    if avg_correlation > 0.7:
+        risk_warnings.append(f"持仓间平均相关性{avg_correlation:.2f}过高（>0.7），分散度不足")
+    if max_drawdown < -15:
+        risk_warnings.append(f"组合近期最大回撤{max_drawdown:.1f}%较大")
+    if portfolio_beta is not None and portfolio_beta > 1.3:
+        risk_warnings.append(f"组合Beta={portfolio_beta:.2f}偏高，波动大于大盘")
+    
+    if not risk_warnings:
+        risk_level = "低风险"
+    elif len(risk_warnings) <= 2:
+        risk_level = "中风险"
+    else:
+        risk_level = "高风险"
+    
+    return {
+        "total_value": round(total_value, 2),
+        "position_count": len(stocks),
+        "position_weights": position_values,
+        "max_single_weight": max_weight,
+        "top3_weight": round(top3_weight, 2),
+        "sector_concentration": sector_concentration,
+        "sector_concentration_ratio": round(sector_concentration_ratio, 1),
+        "max_drawdown": round(max_drawdown, 2),
+        "avg_correlation": round(avg_correlation, 2),
+        "correlation_matrix": correlation_matrix,
+        "portfolio_beta": round(portfolio_beta, 2) if portfolio_beta else None,
+        "risk_level": risk_level,
+        "risk_warnings": risk_warnings,
+    }
+
+
+def format_portfolio_risk_report(risk_data):
+    """格式化组合风险报告
+    
+    Args:
+        risk_data: calculate_portfolio_risk() 返回的结果
+    
+    Returns:
+        str: 格式化的风险报告文本
+    """
+    if not risk_data:
+        return ""
+    
+    lines = []
+    lines.append("=" * 60)
+    lines.append("持仓组合风险分析报告")
+    lines.append("=" * 60)
+    
+    lines.append(f"\n【组合概览】")
+    lines.append(f"  总市值: ¥{risk_data['total_value']:,.2f}")
+    lines.append(f"  持仓数量: {risk_data['position_count']}只")
+    lines.append(f"  风险等级: {risk_data['risk_level']}")
+    
+    lines.append(f"\n【仓位集中度】")
+    lines.append(f"  最大单一标的占比: {risk_data['max_single_weight']}%")
+    lines.append(f"  前三大持仓占比: {risk_data['top3_weight']}%")
+    lines.append(f"  各持仓权重:")
+    for pv in risk_data['position_weights']:
+        lines.append(f"    {pv['name']}({pv['code']}): {pv['weight']}% (¥{pv['value']:,.2f})")
+    
+    lines.append(f"\n【板块集中度】")
+    lines.append(f"  最大板块占比: {risk_data['sector_concentration_ratio']}%")
+    for sector, count in risk_data['sector_concentration'].items():
+        lines.append(f"    板块{sector}: {count}只")
+    
+    lines.append(f"\n【组合波动风险】")
+    lines.append(f"  近期最大回撤: {risk_data['max_drawdown']}%")
+    lines.append(f"  持仓间平均相关性: {risk_data['avg_correlation']}")
+    if risk_data.get('portfolio_beta'):
+        lines.append(f"  组合Beta: {risk_data['portfolio_beta']}（相对上证指数）")
+    
+    if risk_data['risk_warnings']:
+        lines.append(f"\n【⚠️ 风险预警】")
+        for w in risk_data['risk_warnings']:
+            lines.append(f"  ⚠️ {w}")
+    else:
+        lines.append(f"\n【风险预警】无显著风险")
+    
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
 def run_position_analysis(bili_advice=None, wechat_advice=None, weibo_advice=None):
     """运行完整的持仓分析流程
     
