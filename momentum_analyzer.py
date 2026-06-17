@@ -439,29 +439,50 @@ def check_breakout(df, window=20):
     
     close = df['收盘'].values
     high = df['最高'].values if '最高' in df.columns else close
-    
+    low = df['最低'].values if '最低' in df.columns else close
+    volume = df['成交量'].values if '成交量' in df.columns else None
+
     current_price = close[-1]
     current_high = high[-1]
-    
+    current_low = low[-1]
+
     period_high = np.max(high[-window-1:-1])
-    period_low = np.min(close[-window-1:-1])
-    
+    period_low = np.min(low[-window-1:-1])
+
     is_new_high = current_price >= period_high
     is_new_low = current_price <= period_low
-    
+
     distance_to_high = round((current_price / period_high - 1) * 100, 2)
     distance_to_low = round((current_price / period_low - 1) * 100, 2)
-    
+
     days_since_high = 0
     for i in range(len(close) - 2, max(len(close) - window - 1, -1), -1):
         if high[i] >= period_high:
             days_since_high = len(close) - 1 - i
             break
-    
+
+    days_since_low = 0
+    for i in range(len(close) - 2, max(len(close) - window - 1, -1), -1):
+        if low[i] <= period_low:
+            days_since_low = len(close) - 1 - i
+            break
+
+    # 量能配合判断：当前成交量 vs 过去20日平均成交量
+    volume_ratio = None
+    volume_confirmed = False
+    if volume is not None and len(volume) >= window + 1:
+        avg_volume = np.mean(volume[-window-1:-1])
+        if avg_volume > 0:
+            volume_ratio = round(float(volume[-1]) / float(avg_volume), 2)
+            # 量比 > 1.5 视为放量配合
+            volume_confirmed = volume_ratio >= 1.5
+
     breakout_signal = None
     if is_new_high:
-        breakout_signal = "20日新高突破"
-    
+        breakout_signal = "20日新高突破" + ("（放量配合）" if volume_confirmed else "（量能不足）")
+    elif is_new_low:
+        breakout_signal = "20日新低突破" + ("（放量下杀）" if volume_confirmed else "（缩量下杀）")
+
     return {
         "is_new_high": is_new_high,
         "is_new_low": is_new_low,
@@ -470,6 +491,9 @@ def check_breakout(df, window=20):
         "distance_to_high": distance_to_high,
         "distance_to_low": distance_to_low,
         "days_since_high": days_since_high,
+        "days_since_low": days_since_low,
+        "volume_ratio": volume_ratio,
+        "volume_confirmed": volume_confirmed,
         "breakout_signal": breakout_signal
     }
 
@@ -717,7 +741,10 @@ def format_momentum_report(results):
                 report_lines.append(f"  20日高点: {bo['period_high']}")
                 report_lines.append(f"  20日低点: {bo['period_low']}")
                 report_lines.append(f"  距离20日高点: {bo['distance_to_high']}%")
-                if bo['is_new_high']:
+                report_lines.append(f"  距离20日低点: {bo['distance_to_low']}%")
+                if bo.get('volume_ratio'):
+                    report_lines.append(f"  量比: {bo['volume_ratio']}")
+                if bo['is_new_high'] or bo['is_new_low']:
                     report_lines.append(f"  ★★★ 突破信号: {bo['breakout_signal']} ★★★")
                     breakout_items.append({
                         "type": "指数",
@@ -751,7 +778,10 @@ def format_momentum_report(results):
                 report_lines.append(f"  20日高点: {bo['period_high']}")
                 report_lines.append(f"  20日低点: {bo['period_low']}")
                 report_lines.append(f"  距离20日高点: {bo['distance_to_high']}%")
-                if bo['is_new_high']:
+                report_lines.append(f"  距离20日低点: {bo['distance_to_low']}%")
+                if bo.get('volume_ratio'):
+                    report_lines.append(f"  量比: {bo['volume_ratio']}")
+                if bo['is_new_high'] or bo['is_new_low']:
                     report_lines.append(f"  ★★★ 突破信号: {bo['breakout_signal']} ★★★")
                     breakout_items.append({
                         "type": "股票",
