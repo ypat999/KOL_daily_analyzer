@@ -319,9 +319,21 @@ def manual_login_wechat() -> bool:
     """
     try:
         print("\n>>> 启动微信手动登录流程...")
-        print("微信需要通过扫码登录，请运行 wechat_login.py 进行登录")
-        print("或者手动更新 wechat_cookies.json 文件")
-        return False
+        
+        try:
+            from wechat_login import update_wechat_cookie
+            new_cookie, new_token = update_wechat_cookie()
+            
+            if new_cookie and new_token:
+                print("✓ 微信登录成功，cookie已保存")
+                return True
+            else:
+                print("✗ 微信登录失败")
+                return False
+        except ImportError:
+            print("✗ 未找到wechat_login模块，无法自动登录")
+            print("请手动运行 wechat_login.py 或手动更新 wechat_cookies.json 文件")
+            return False
         
     except Exception as e:
         print(f"✗ 微信登录出错: {str(e)}")
@@ -386,25 +398,19 @@ def perform_unified_login() -> dict:
         for platform in need_login:
             print(f"  - {platform}: {validation_results[platform]['message']}")
         
-        print("\n是否现在进行手动登录？")
-        print("1. 是，立即登录")
-        print("2. 否，稍后手动处理")
-        
-        choice = input("\n请选择 (1/2): ").strip()
-        
-        if choice == "1":
-            for platform in need_login:
-                print(f"\n>>> 正在登录 {platform}...")
-                
-                if platform == "weibo":
-                    success = manual_login_weibo()
-                    login_results[platform] = success
-                elif platform == "bili":
-                    success = manual_login_bili()
-                    login_results[platform] = success
-                elif platform == "wechat":
-                    success = manual_login_wechat()
-                    login_results[platform] = success
+        print("\n正在自动登录失效平台...")
+        for platform in need_login:
+            print(f"\n>>> 正在登录 {platform}...")
+            
+            if platform == "weibo":
+                success = manual_login_weibo()
+                login_results[platform] = success
+            elif platform == "bili":
+                success = manual_login_bili()
+                login_results[platform] = success
+            elif platform == "wechat":
+                success = manual_login_wechat()
+                login_results[platform] = success
     else:
         print("\n✓ 所有平台cookie均有效，无需重新登录")
     

@@ -1198,6 +1198,24 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
                 f.write(f"{segment.text}\n\n")
         
         print(f"字幕生成成功: {srt_path}")
+        
+        # 显式释放模型和GPU内存，避免长视频累积导致崩溃
+        try:
+            del model
+            del segments
+            del info
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print("已释放模型并清理GPU内存")
+            except:
+                pass
+        except:
+            pass
+        
         return srt_path
         
     except Exception as e:

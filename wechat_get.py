@@ -59,8 +59,19 @@ def load_cookie_from_file():
 cookie, token = load_cookie_from_file()
 
 def check_and_update_cookie():
-    """检查cookie有效性，如果失效则尝试更新"""
+    """检查cookie有效性，如果失效则尝试更新
+    
+    统一登录阶段可能已更新cookie文件，先重新读取文件
+    """
     global cookie, token, headers, data
+    
+    # 先重新从文件读取cookie（统一登录阶段可能已更新）
+    new_cookie, new_token = load_cookie_from_file()
+    if new_cookie and new_token:
+        cookie = new_cookie
+        token = new_token
+        headers["Cookie"] = cookie
+        data["token"] = token
     
     # 检查cookie是否有效
     if HAS_WECHAT_LOGIN and 'check_cookie_validity' in globals():
