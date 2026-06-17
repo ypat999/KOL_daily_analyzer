@@ -498,6 +498,174 @@ def check_breakout(df, window=20):
     }
 
 
+def calculate_technical_indicators(df):
+    """计算常用技术指标
+    
+    包含：RSI(14)、MACD(12,26,9)、ATR(14)、量比、换手率代理指标
+    
+    Args:
+        df: K线数据DataFrame
+    
+    Returns:
+        dict: 技术指标结果
+    """
+    if df is None or len(df) < 35:
+        return None
+    
+    close = df['收盘'].values.astype(float)
+    high = df['最高'].values.astype(float) if '最高' in df.columns else close
+    low = df['最低'].values.astype(float) if '最低' in df.columns else close
+    volume = df['成交量'].values.astype(float) if '成交量' in df.columns else None
+    
+    indicators = {}
+    
+    # 1. RSI(14)
+    if len(close) >= 15:
+        deltas = np.diff(close)
+        gains = np.where(deltas > 0, deltas, 0)
+        losses = np.where(deltas < 0, -deltas, 0)
+        
+        # 使用Wilder平滑法
+        avg_gain = np.mean(gains[:14])
+        avg_loss = np.mean(losses[:14])
+        
+        for i in range(14, len(deltas)):
+            avg_gain = (avg_gain * 13 + gains[i]) / 14
+            avg_loss = (avg_loss * 13 + losses[i]) / 14
+        
+        if avg_loss == 0:
+            rsi = 100.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+        
+        indicators['rsi_14'] = round(rsi, 2)
+        if rsi >= 70:
+            indicators['rsi_signal'] = "超买"
+        elif rsi <= 30:
+            indicators['rsi_signal'] = "超卖"
+        else:
+            indicators['rsi_signal'] = "中性"
+    
+    # 2. MACD(12,26,9)
+    if len(close) >= 35:
+        ema12 = _calculate_ema(close, 12)
+        ema26 = _calculate_ema(close, 26)
+        dif = ema12 - ema26
+        dea = _calculate_ema(dif, 9)
+        macd_hist = (dif - dea) * 2
+        
+        indicators['macd_dif'] = round(float(dif[-1]), 4)
+        indicators['macd_dea'] = round(float(dea[-1]), 4)
+        indicators['macd_hist'] = round(float(macd_hist[-1]), 4)
+        
+        if dif[-1] > dea[-1] and dif[-2] <= dea[-2]:
+            indicators['macd_signal'] = "金叉（看多）"
+        elif dif[-1] < dea[-1] and dif[-2] >= dea[-2]:
+            indicators['macd_signal'] = "死叉（看空）"
+        elif dif[-1] > dea[-1]:
+            indicators['macd_signal'] = "多头排列"
+        else:
+            indicators['macd_signal'] = "空头排列"
+    
+    # 3. ATR(14) - 用于止损建议
+    if len(close) >= 15 and len(high) == len(close) and len(low) == len(close):
+        tr_list = []
+        for i in range(1, len(close)):
+            tr = max(
+                high[i] - low[i],
+                abs(high[i] - close[i-1]),
+                abs(low[i] - close[i-1])
+            )
+            tr_list.append(tr)
+        
+        # Wilder平滑
+        atr = np.mean(tr_list[:14])
+        for i in range(14, len(tr_list)):
+            atr = (atr * 13 + tr_list[i]) / 14
+        
+        indicators['atr_14'] = round(float(atr), 4)
+        indicators['atr_pct'] = round(float(atr / close[-1] * 100), 2)
+        # 建议止损距离 = 1.5倍ATR
+        indicators['suggested_stop_distance'] = round(float(atr * 1.5), 2)
+        indicators['suggested_stop_pct'] = round(float(atr * 1.5 / close[-1] * 100), 2)
+    
+    # 4. 量比 = 今日成交量 / 过去20日平均成交量
+    if volume is not None and len(volume) >= 21:
+        avg_vol_20 = np.mean(volume[-21:-1])
+        if avg_vol_20 > 0:
+            volume_ratio = float(volume[-1]) / avg_vol_20
+            indicators['volume_ratio'] = round(volume_ratio, 2)
+            if volume_ratio >= 2.0:
+                indicators['volume_signal'] = "显著放量"
+            elif volume_ratio >= 1.5:
+                indicators['volume_signal'] = "放量"
+            elif volume_ratio >= 0.7:
+                indicators['volume_signal'] = "正常"
+            else:
+                indicators['volume_signal'] = "缩量"
+    
+    # 5. KDJ(9,3,3)
+    if len(close) >= 9 and len(high) == len(close) and len(low) == len(close):
+        k_value, d_value, j_value = _calculate_kdj(high, low, close, 9, 3, 3)
+        if k_value is not None:
+            indicators['kdj_k'] = round(k_value, 2)
+            indicators['kdj_d'] = round(d_value, 2)
+            indicators['kdj_j'] = round(j_value, 2)
+            if j_value > 100:
+                indicators['kdj_signal'] = "超买"
+            elif j_value < 0:
+                indicators['kdj_signal'] = "超卖"
+            elif k_value > d_value:
+                indicators['kdj_signal'] = "金叉偏多"
+            else:
+                indicators['kdj_signal'] = "死叉偏空"
+    
+    return indicators
+
+
+def _calculate_ema(data, period):
+    """计算指数移动平均"""
+    data = np.array(data, dtype=float)
+    ema = np.zeros_like(data)
+    multiplier = 2 / (period + 1)
+    ema[0] = data[0]
+    for i in range(1, len(data)):
+        ema[i] = data[i] * multiplier + ema[i-1] * (1 - multiplier)
+    return ema
+
+
+def _calculate_kdj(high, low, close, n=9, m1=3, m2=3):
+    """计算KDJ指标"""
+    if len(close) < n:
+        return None, None, None
+    
+    k_values = []
+    d_values = []
+    
+    for i in range(n - 1, len(close)):
+        period_high = max(high[i-n+1:i+1])
+        period_low = min(low[i-n+1:i+1])
+        if period_high == period_low:
+            rsv = 50
+        else:
+            rsv = (close[i] - period_low) / (period_high - period_low) * 100
+        
+        if i == n - 1:
+            k = 50
+            d = 50
+        k = (m1 - 1) / m1 * k + 1 / m1 * rsv
+        d = (m2 - 1) / m2 * d + 1 / m2 * k
+        k_values.append(k)
+        d_values.append(d)
+    
+    if not k_values:
+        return None, None, None
+    
+    j = 3 * k_values[-1] - 2 * d_values[-1]
+    return k_values[-1], d_values[-1], j
+
+
 def calculate_support_resistance(df, lookback=60, swing_window=5):
     """计算支撑/阻力位
     
@@ -670,6 +838,8 @@ def calculate_momentum_factors(df):
     factors['breakout'] = check_breakout(df, window=20)
     
     factors['support_resistance'] = calculate_support_resistance(df)
+    
+    factors['technical_indicators'] = calculate_technical_indicators(df)
     
     return factors
 
@@ -897,6 +1067,18 @@ def format_momentum_report(results):
                 if sr.get('recent_gaps'):
                     for gap in sr['recent_gaps']:
                         report_lines.append(f"  {gap['type']}: {gap['lower']}-{gap['upper']} ({gap['date'][:10]})")
+            if factors.get('technical_indicators'):
+                ti = factors['technical_indicators']
+                if 'rsi_14' in ti:
+                    report_lines.append(f"  RSI(14): {ti['rsi_14']} ({ti['rsi_signal']})")
+                if 'macd_dif' in ti:
+                    report_lines.append(f"  MACD: DIF={ti['macd_dif']} DEA={ti['macd_dea']} ({ti['macd_signal']})")
+                if 'atr_14' in ti:
+                    report_lines.append(f"  ATR(14): {ti['atr_14']} ({ti['atr_pct']}%) | 建议止损距离: {ti['suggested_stop_distance']} ({ti['suggested_stop_pct']}%)")
+                if 'volume_ratio' in ti:
+                    report_lines.append(f"  量比: {ti['volume_ratio']} ({ti['volume_signal']})")
+                if 'kdj_k' in ti:
+                    report_lines.append(f"  KDJ: K={ti['kdj_k']} D={ti['kdj_d']} J={ti['kdj_j']} ({ti['kdj_signal']})")
             if idx['reasons']:
                 report_lines.append(f"  关注原因: {'; '.join(idx['reasons'])}")
     
@@ -943,6 +1125,18 @@ def format_momentum_report(results):
                 if sr.get('recent_gaps'):
                     for gap in sr['recent_gaps']:
                         report_lines.append(f"  {gap['type']}: {gap['lower']}-{gap['upper']} ({gap['date'][:10]})")
+            if factors.get('technical_indicators'):
+                ti = factors['technical_indicators']
+                if 'rsi_14' in ti:
+                    report_lines.append(f"  RSI(14): {ti['rsi_14']} ({ti['rsi_signal']})")
+                if 'macd_dif' in ti:
+                    report_lines.append(f"  MACD: DIF={ti['macd_dif']} DEA={ti['macd_dea']} ({ti['macd_signal']})")
+                if 'atr_14' in ti:
+                    report_lines.append(f"  ATR(14): {ti['atr_14']} ({ti['atr_pct']}%) | 建议止损距离: {ti['suggested_stop_distance']} ({ti['suggested_stop_pct']}%)")
+                if 'volume_ratio' in ti:
+                    report_lines.append(f"  量比: {ti['volume_ratio']} ({ti['volume_signal']})")
+                if 'kdj_k' in ti:
+                    report_lines.append(f"  KDJ: K={ti['kdj_k']} D={ti['kdj_d']} J={ti['kdj_j']} ({ti['kdj_signal']})")
             if stock['reasons']:
                 report_lines.append(f"  关注原因: {'; '.join(stock['reasons'])}")
     
