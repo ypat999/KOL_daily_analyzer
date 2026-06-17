@@ -498,6 +498,139 @@ def check_breakout(df, window=20):
     }
 
 
+def calculate_support_resistance(df, lookback=60, swing_window=5):
+    """计算支撑/阻力位
+    
+    综合三类关键价位：
+    1. 近N日 swing high/low（波段高低点）
+    2. 整数关口（心理价位）
+    3. 近端缺口（跳空未回补）
+    
+    Args:
+        df: K线数据
+        lookback: 回溯天数，默认60日
+        swing_window: 波段点识别窗口，默认5日
+    
+    Returns:
+        dict: 支撑/阻力位结果
+    """
+    if df is None or len(df) < swing_window * 2 + 1:
+        return None
+    
+    close = df['收盘'].values
+    high = df['最高'].values if '最高' in df.columns else close
+    low = df['最低'].values if '最低' in df.columns else close
+    current_price = close[-1]
+    
+    lookback = min(lookback, len(close))
+    recent_high = high[-lookback:]
+    recent_low = low[-lookback:]
+    
+    # 1. 识别波段高低点（Fractal Swing Points）
+    swing_highs = []
+    swing_lows = []
+    for i in range(swing_window, len(recent_high) - swing_window):
+        is_swing_high = all(recent_high[i] >= recent_high[i-j] for j in range(1, swing_window+1)) and \
+                        all(recent_high[i] >= recent_high[i+j] for j in range(1, swing_window+1))
+        is_swing_low = all(recent_low[i] <= recent_low[i-j] for j in range(1, swing_window+1)) and \
+                       all(recent_low[i] <= recent_low[i+j] for j in range(1, swing_window+1))
+        if is_swing_high:
+            swing_highs.append(round(float(recent_high[i]), 2))
+        if is_swing_low:
+            swing_lows.append(round(float(recent_low[i]), 2))
+    
+    # 去重并排序
+    swing_highs = sorted(set(swing_highs), reverse=True)
+    swing_lows = sorted(set(swing_lows))
+    
+    # 2. 整数关口（最近的整数价位）
+    def nearest_round_numbers(price, count=3):
+        levels = []
+        step = 1 if price < 100 else (10 if price < 1000 else (100 if price < 10000 else 1000))
+        base = int(price / step) * step
+        for offset in range(-count, count+1):
+            level = base + offset * step
+            if level > 0 and level != price:
+                levels.append(level)
+        return sorted(levels)
+    
+    round_levels = nearest_round_numbers(current_price)
+    
+    # 3. 近端缺口（最近20日内未回补的跳空）
+    gaps = []
+    gap_lookback = min(20, len(close) - 1)
+    for i in range(-gap_lookback, -1):
+        idx = len(close) + i
+        prev_high = high[idx-1]
+        prev_low = low[idx-1]
+        curr_low = low[idx]
+        curr_high = high[idx]
+        # 向上缺口：今日最低 > 昨日最高
+        if curr_low > prev_high:
+            gaps.append({
+                "type": "向上缺口",
+                "date": str(df['日期'].iloc[idx]) if '日期' in df.columns else "",
+                "upper": round(float(prev_high), 2),
+                "lower": round(float(curr_low), 2)
+            })
+        # 向下缺口：今日最高 < 昨日最低
+        elif curr_high < prev_low:
+            gaps.append({
+                "type": "向下缺口",
+                "date": str(df['日期'].iloc[idx]) if '日期' in df.columns else "",
+                "upper": round(float(curr_high), 2),
+                "lower": round(float(prev_low), 2)
+            })
+    
+    # 阻力位：高于当前价的波段高点 + 整数关口 + 缺口上沿
+    resistance_levels = []
+    for sh in swing_highs:
+        if sh > current_price:
+            resistance_levels.append({"price": sh, "type": "波段高点"})
+    for level in round_levels:
+        if level > current_price:
+            resistance_levels.append({"price": level, "type": "整数关口"})
+    for gap in gaps:
+        if gap["type"] == "向下缺口" and gap["upper"] > current_price:
+            resistance_levels.append({"price": gap["upper"], "type": f"缺口阻力({gap['date'][:10]})"})
+    
+    # 支撑位：低于当前价的波段低点 + 整数关口 + 缺口下沿
+    support_levels = []
+    for sl in swing_lows:
+        if sl < current_price:
+            support_levels.append({"price": sl, "type": "波段低点"})
+    for level in round_levels:
+        if level < current_price:
+            support_levels.append({"price": level, "type": "整数关口"})
+    for gap in gaps:
+        if gap["type"] == "向上缺口" and gap["lower"] < current_price:
+            support_levels.append({"price": gap["lower"], "type": f"缺口支撑({gap['date'][:10]})"})
+    
+    # 去重并按距离当前价排序，取最近的各3个
+    seen_r = set()
+    unique_resistance = []
+    for r in sorted(resistance_levels, key=lambda x: x["price"]):
+        if r["price"] not in seen_r:
+            seen_r.add(r["price"])
+            unique_resistance.append(r)
+    unique_resistance = unique_resistance[:3]
+    
+    seen_s = set()
+    unique_support = []
+    for s in sorted(support_levels, key=lambda x: x["price"], reverse=True):
+        if s["price"] not in seen_s:
+            seen_s.add(s["price"])
+            unique_support.append(s)
+    unique_support = unique_support[:3]
+    
+    return {
+        "current_price": round(float(current_price), 2),
+        "resistance_levels": unique_resistance,
+        "support_levels": unique_support,
+        "recent_gaps": gaps[-3:] if gaps else []
+    }
+
+
 def calculate_momentum_factors(df):
     """计算动量因子
     
@@ -535,6 +668,8 @@ def calculate_momentum_factors(df):
     factors['trend_strength'] = calculate_trend_strength(df)
     
     factors['breakout'] = check_breakout(df, window=20)
+    
+    factors['support_resistance'] = calculate_support_resistance(df)
     
     return factors
 
@@ -753,6 +888,15 @@ def format_momentum_report(results):
                         "price": idx['latest_price'],
                         "signal": bo['breakout_signal']
                     })
+            if factors.get('support_resistance'):
+                sr = factors['support_resistance']
+                if sr.get('resistance_levels'):
+                    report_lines.append(f"  阻力位: {', '.join([f'{r[\"price\"]}({r[\"type\"]})' for r in sr['resistance_levels']])}")
+                if sr.get('support_levels'):
+                    report_lines.append(f"  支撑位: {', '.join([f'{s[\"price\"]}({s[\"type\"]})' for s in sr['support_levels']])}")
+                if sr.get('recent_gaps'):
+                    for gap in sr['recent_gaps']:
+                        report_lines.append(f"  {gap['type']}: {gap['lower']}-{gap['upper']} ({gap['date'][:10]})")
             if idx['reasons']:
                 report_lines.append(f"  关注原因: {'; '.join(idx['reasons'])}")
     
@@ -790,6 +934,15 @@ def format_momentum_report(results):
                         "price": stock['latest_price'],
                         "signal": bo['breakout_signal']
                     })
+            if factors.get('support_resistance'):
+                sr = factors['support_resistance']
+                if sr.get('resistance_levels'):
+                    report_lines.append(f"  阻力位: {', '.join([f'{r[\"price\"]}({r[\"type\"]})' for r in sr['resistance_levels']])}")
+                if sr.get('support_levels'):
+                    report_lines.append(f"  支撑位: {', '.join([f'{s[\"price\"]}({s[\"type\"]})' for s in sr['support_levels']])}")
+                if sr.get('recent_gaps'):
+                    for gap in sr['recent_gaps']:
+                        report_lines.append(f"  {gap['type']}: {gap['lower']}-{gap['upper']} ({gap['date'][:10]})")
             if stock['reasons']:
                 report_lines.append(f"  关注原因: {'; '.join(stock['reasons'])}")
     
