@@ -12,6 +12,7 @@ from position_manager import run_position_analysis, list_positions, load_positio
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
+from signal_knowledge_base import format_kb_summary_for_prompt, record_signals_from_analysis, update_signal_outcomes
 
 class KOLAnalyzer:
     """KOL分析器主类，用于执行各平台任务并合并投资建议"""
@@ -184,6 +185,16 @@ class KOLAnalyzer:
         except Exception as e:
             print(f"持仓组合风险分析失败（不影响主流程）: {e}")
         
+        # 信号-胜率知识库：先更新历史信号收益，再注入摘要
+        try:
+            update_signal_outcomes()
+            kb_summary = format_kb_summary_for_prompt()
+            if kb_summary:
+                combined_content += f"=== 信号-胜率知识库 ===\n{kb_summary}\n\n"
+                print("已注入信号-胜率知识库到合并prompt")
+        except Exception as e:
+            print(f"信号知识库更新失败（不影响主流程）: {e}")
+        
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
         try:
@@ -288,6 +299,26 @@ class KOLAnalyzer:
             
             # 提取并保存综合投资建议的预测观点
             record_predictions_from_advice(merged_advice, "merged", "综合分析", self.current_date, self.archive_folder)
+            
+            # 记录信号事件到知识库（用于长期胜率统计）
+            try:
+                # 从综合建议中提取最终方向
+                advice_direction = "neutral"
+                if "做多" in merged_advice or "看多" in merged_advice or "Go" in merged_advice:
+                    advice_direction = "bullish"
+                elif "做空" in merged_advice or "看空" in merged_advice or "No-Go" in merged_advice:
+                    advice_direction = "bearish"
+                
+                # 加载KOL预测用于共识统计
+                from prediction_recorder import load_predictions
+                kol_preds = load_predictions(self.archive_folder)
+                
+                # 提取市场宽度数据（简化版，从报告文本无法还原，用None）
+                record_signals_from_analysis(
+                    momentum_results, kol_preds, None, advice_direction
+                )
+            except Exception as e:
+                print(f"记录信号事件到知识库失败（不影响主流程）: {e}")
             
             print("投资建议合并完成")
             return merged_advice
