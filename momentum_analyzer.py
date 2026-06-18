@@ -1061,9 +1061,11 @@ def format_momentum_report(results):
             if factors.get('support_resistance'):
                 sr = factors['support_resistance']
                 if sr.get('resistance_levels'):
-                    report_lines.append(f"  阻力位: {', '.join([f'{r[\"price\"]}({r[\"type\"]})' for r in sr['resistance_levels']])}")
+                    _resist = ', '.join(f"{r['price']}({r['type']})" for r in sr['resistance_levels'])
+                    report_lines.append(f"  阻力位: {_resist}")
                 if sr.get('support_levels'):
-                    report_lines.append(f"  支撑位: {', '.join([f'{s[\"price\"]}({s[\"type\"]})' for s in sr['support_levels']])}")
+                    _support = ', '.join(f"{s['price']}({s['type']})" for s in sr['support_levels'])
+                    report_lines.append(f"  支撑位: {_support}")
                 if sr.get('recent_gaps'):
                     for gap in sr['recent_gaps']:
                         report_lines.append(f"  {gap['type']}: {gap['lower']}-{gap['upper']} ({gap['date'][:10]})")
@@ -1119,9 +1121,11 @@ def format_momentum_report(results):
             if factors.get('support_resistance'):
                 sr = factors['support_resistance']
                 if sr.get('resistance_levels'):
-                    report_lines.append(f"  阻力位: {', '.join([f'{r[\"price\"]}({r[\"type\"]})' for r in sr['resistance_levels']])}")
+                    _resist = ', '.join(f"{r['price']}({r['type']})" for r in sr['resistance_levels'])
+                    report_lines.append(f"  阻力位: {_resist}")
                 if sr.get('support_levels'):
-                    report_lines.append(f"  支撑位: {', '.join([f'{s[\"price\"]}({s[\"type\"]})' for s in sr['support_levels']])}")
+                    _support = ', '.join(f"{s['price']}({s['type']})" for s in sr['support_levels'])
+                    report_lines.append(f"  支撑位: {_support}")
                 if sr.get('recent_gaps'):
                     for gap in sr['recent_gaps']:
                         report_lines.append(f"  {gap['type']}: {gap['lower']}-{gap['upper']} ({gap['date'][:10]})")
