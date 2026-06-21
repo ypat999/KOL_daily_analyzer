@@ -85,3 +85,45 @@ def deepseek_summary(subtitle,
     )
 
     return response.choices[0].message.content
+
+
+def deepseek_chat(messages, model=None, temperature=None, max_tokens=None, stream=True):
+    """多轮对话接口
+    
+    Args:
+        messages: 消息列表 [{"role": "system"/"user"/"assistant", "content": "..."}]
+        model: 模型名称
+        temperature: 温度
+        max_tokens: 最大token数
+        stream: 是否流式输出
+    
+    Returns:
+        str: 助手回复内容
+    """
+    DEEPSEEK_API_KEY = load_api_key_from_file()
+    client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+
+    response = client.chat.completions.create(
+        model=model or MODEL_CONFIG["model"],
+        messages=messages,
+        temperature=temperature if temperature is not None else 0.3,
+        max_tokens=max_tokens or 8192,
+        top_p=MODEL_CONFIG["top_p"],
+        frequency_penalty=MODEL_CONFIG["frequency_penalty"],
+        presence_penalty=MODEL_CONFIG["presence_penalty"],
+        stream=stream,
+    )
+
+    if not stream:
+        return response.choices[0].message.content
+
+    # 流式输出
+    full_content = ""
+    for chunk in response:
+        if chunk.choices and chunk.choices[0].delta.content:
+            text = chunk.choices[0].delta.content
+            print(text, end="", flush=True)
+            full_content += text
+
+    print()  # 换行
+    return full_content

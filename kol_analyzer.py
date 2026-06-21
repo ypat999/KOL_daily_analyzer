@@ -14,6 +14,7 @@ from backtest_analyzer import load_latest_backtest_stats, format_backtest_summar
 from market_breadth import run_market_breadth_analysis
 from signal_knowledge_base import format_kb_summary_for_prompt, record_signals_from_analysis, update_signal_outcomes
 from advice_history import format_history_for_prompt, record_advice
+from deepseek_summary import deepseek_chat
 
 class KOLAnalyzer:
     """KOL分析器主类，用于执行各平台任务并合并投资建议"""
@@ -463,6 +464,143 @@ class KOLAnalyzer:
             "date": self.current_date
         }
 
+    def build_chat_context(self, result):
+        """构建交互式对话的上下文消息列表
+        
+        将所有分析报告作为系统上下文注入，让后续对话可以引用。
+        
+        Args:
+            result: run_all_tasks 的返回结果
+        
+        Returns:
+            list: messages 列表
+        """
+        context_parts = []
+        
+        # 各平台原始建议
+        if result.get("bili_advice"):
+            context_parts.append(f"【B站投资建议】\n{result['bili_advice']}")
+        if result.get("wechat_advice"):
+            context_parts.append(f"【微信投资建议】\n{result['wechat_advice']}")
+        if result.get("weibo_advice"):
+            context_parts.append(f"【微博投资建议】\n{result['weibo_advice']}")
+        
+        # 动量分析报告
+        momentum_path = os.path.join(self.archive_folder, f"动量分析报告_{self.current_date}.txt")
+        if os.path.exists(momentum_path):
+            try:
+                with open(momentum_path, "r", encoding="utf-8") as f:
+                    context_parts.append(f"【动量分析报告】\n{f.read()}")
+            except Exception:
+                pass
+        
+        # 市场宽度分析
+        try:
+            market_report = run_market_breadth_analysis()
+            if market_report:
+                context_parts.append(f"【市场宽度分析】\n{market_report}")
+        except Exception:
+            pass
+        
+        # 持仓组合风险
+        try:
+            risk_data = calculate_portfolio_risk()
+            if risk_data:
+                risk_report = format_portfolio_risk_report(risk_data)
+                context_parts.append(f"【持仓组合风险分析】\n{risk_report}")
+        except Exception:
+            pass
+        
+        # 持仓匹配分析
+        match_path = os.path.join(self.archive_folder, f"持仓匹配分析_{self.current_date}.txt")
+        if os.path.exists(match_path):
+            try:
+                with open(match_path, "r", encoding="utf-8") as f:
+                    context_parts.append(f"【持仓匹配分析】\n{f.read()}")
+            except Exception:
+                pass
+        
+        # 信号知识库
+        try:
+            kb_summary = format_kb_summary_for_prompt()
+            if kb_summary:
+                context_parts.append(f"【信号-胜率知识库】\n{kb_summary}")
+        except Exception:
+            pass
+        
+        # 建议历史
+        try:
+            history_text = format_history_for_prompt(days=7)
+            if history_text:
+                context_parts.append(f"【过去7天建议历史】\n{history_text}")
+        except Exception:
+            pass
+        
+        # 综合投资建议（作为助手首条回复）
+        merged = result.get("merged_advice", "")
+        
+        context_text = "\n\n---\n\n".join(context_parts) if context_parts else "暂无分析数据"
+        
+        system_msg = (
+            "你是首席投资策略官，拥有20年多资产配置经验。"
+            "以下是今日的全部分析报告和数据，作为你回答问题的背景知识。"
+            "用户会基于这些报告继续提问，请结合背景数据给出精准、可操作的回答。"
+            "回答时可以直接引用报告中的具体数据和价格，不需要重复整个报告。"
+        )
+        
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": f"以下是今日的全部分析报告：\n\n{context_text}"},
+        ]
+        
+        if merged:
+            messages.append({"role": "assistant", "content": merged})
+        
+        return messages
+
+    def interactive_chat(self, result):
+        """交互式对话模式
+        
+        获取投资建议后进入对话模式，可以继续提问。
+        对话上下文包含所有分析报告。
+        
+        Args:
+            result: run_all_tasks 的返回结果
+        """
+        messages = self.build_chat_context(result)
+        
+        print("\n" + "=" * 60)
+        print("进入交互式对话模式")
+        print("输入问题继续探讨，输入 q/quit/exit 退出")
+        print("=" * 60)
+        
+        if result.get("merged_advice"):
+            print("\n今日综合投资建议已生成，你可以基于上述建议继续提问。")
+        
+        while True:
+            try:
+                user_input = input("\n你: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n退出对话模式")
+                break
+            
+            if not user_input:
+                continue
+            if user_input.lower() in ("q", "quit", "exit", "退出"):
+                print("退出对话模式")
+                break
+            
+            messages.append({"role": "user", "content": user_input})
+            
+            print("\n策略官: ", end="", flush=True)
+            try:
+                reply = deepseek_chat(messages, temperature=0.3, max_tokens=4096, stream=True)
+                messages.append({"role": "assistant", "content": reply})
+            except Exception as e:
+                print(f"\n对话出错: {e}")
+                # 移除失败的用户消息
+                messages.pop()
+
 
 if __name__ == "__main__":
     analyzer = KOLAnalyzer()
@@ -476,3 +614,6 @@ if __name__ == "__main__":
     print(f"- 持仓分析: {'有' if result['position_result'] else '无'}")
     print(f"- 持仓匹配: {'有' if result['match_result'] else '无'}")
     print(f"- 执行日期: {result['date']}")
+    
+    # 进入交互式对话模式
+    analyzer.interactive_chat(result)
