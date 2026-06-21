@@ -264,7 +264,10 @@ def _resolve_stock_code(target_name):
         return STOCK_CODE_MAP[target_name]
     try:
         _wait_for_rate_limit()
-        df = ak.stock_zh_a_spot_em()
+        # 优先使用新浪实时行情
+        df = ak.stock_zh_a_spot()
+        if df is None or df.empty:
+            df = ak.stock_zh_a_spot_em()
         for _, row in df.iterrows():
             name = str(row.get("名称", ""))
             code = str(row.get("代码", ""))
@@ -308,8 +311,15 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
             if not code:
                 return None
 
-            df = ak.index_zh_a_hist(symbol=code, period="daily",
-                                    start_date=start_str, end_date=end_str)
+            # 新浪数据源：代码需加sh/sz前缀
+            sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
+            df = ak.stock_zh_index_daily(symbol=sina_code)
+            # 新浪返回全量数据，手动过滤
+            if df is not None and len(df) > 0 and 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df[(df['date'] >= start_str) & (df['date'] <= end_str)]
+                df = df.rename(columns={'date': '日期', 'open': '开盘', 'high': '最高',
+                                        'low': '最低', 'close': '收盘', 'volume': '成交量'})
         elif target_type == "stock":
             code_match = re.search(r'(\d{6})', target)
             if code_match:
@@ -318,8 +328,15 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
                 code = _resolve_stock_code(target)
             if not code:
                 return None
-            df = ak.stock_zh_a_hist(symbol=code, period="daily",
-                                    start_date=start_str, end_date=end_str, adjust="qfq")
+            # 新浪数据源：代码需加sh/sz前缀
+            sina_code = f"sh{code}" if code.startswith("6") else f"sz{code}"
+            df = ak.stock_zh_a_daily(symbol=sina_code, start_date=start_str,
+                                     end_date=end_str, adjust="qfq")
+            # 新浪列名映射
+            if df is not None and len(df) > 0 and 'date' in df.columns:
+                df = df.rename(columns={'date': '日期', 'open': '开盘', 'high': '最高',
+                                        'low': '最低', 'close': '收盘', 'volume': '成交量',
+                                        'amount': '成交额'})
         else:
             return None
 

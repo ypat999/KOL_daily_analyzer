@@ -80,9 +80,29 @@ def _clean_yfinance_df(df):
     return df
 
 def _clean_akshare_df(df):
-    """清洗akshare返回的DataFrame"""
+    """清洗akshare返回的DataFrame，兼容东财和新浪数据源"""
     if df is None or len(df) == 0:
         return None
+    
+    # 新浪数据源列名映射（英文→中文）
+    sina_column_map = {
+        'date': '日期',
+        'open': '开盘',
+        'high': '最高',
+        'low': '最低',
+        'close': '收盘',
+        'volume': '成交量',
+        'amount': '成交额',
+        'turnover': '换手率',
+    }
+    
+    for eng, chn in sina_column_map.items():
+        if eng in df.columns and chn not in df.columns:
+            df = df.rename(columns={eng: chn})
+    
+    # 新浪没有涨跌幅，用收盘价计算
+    if '涨跌幅' not in df.columns and '收盘' in df.columns:
+        df['涨跌幅'] = df['收盘'].pct_change() * 100
     
     df['日期'] = pd.to_datetime(df['日期'])
     df = df.dropna(subset=['收盘'])
@@ -301,12 +321,14 @@ def get_index_kline(code, days=150, max_retries=3):
                 end_date = datetime.now().strftime("%Y%m%d")
                 start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
                 
-                df = ak.index_zh_a_hist(
-                    symbol=code,
-                    period="daily",
-                    start_date=start_date,
-                    end_date=end_date
-                )
+                # 新浪数据源：代码需加sh/sz前缀
+                sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
+                df = ak.stock_zh_index_daily(symbol=sina_code)
+                
+                # 新浪返回全量数据，手动过滤日期范围
+                if df is not None and len(df) > 0 and 'date' in df.columns:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
                 
                 df = _clean_akshare_df(df)
                 if df is not None and len(df) > 0:
@@ -384,9 +406,10 @@ def get_stock_kline(code, days=150, max_retries=3):
                 end_date = datetime.now().strftime("%Y%m%d")
                 start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
                 
-                df = ak.stock_zh_a_hist(
-                    symbol=code,
-                    period="daily",
+                # 新浪数据源：代码需加sh/sz前缀
+                sina_code = f"sh{code}" if code.startswith("6") else f"sz{code}"
+                df = ak.stock_zh_a_daily(
+                    symbol=sina_code,
                     start_date=start_date,
                     end_date=end_date,
                     adjust="qfq"

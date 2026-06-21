@@ -11,6 +11,7 @@
 """
 
 import numpy as np
+import pandas as pd
 from datetime import datetime, timedelta
 
 try:
@@ -29,30 +30,71 @@ except ImportError:
 def get_limit_up_down_stats():
     """获取涨跌停家数统计
     
+    优先使用新浪实时行情统计涨跌停，东财接口作为备用。
+    
     Returns:
         dict: 涨停/跌停家数、封板率等
     """
     if not AKSHARE_AVAILABLE:
         return None
     
+    # 方案1：用新浪实时行情统计涨跌停
     try:
-        # 涨停板池
+        df = ak.stock_zh_a_spot()
+        if df is not None and not df.empty:
+            # 新浪返回列名可能含"涨跌幅"
+            change_col = None
+            for col in df.columns:
+                if "涨跌幅" in str(col) or "change_pct" in str(col).lower():
+                    change_col = col
+                    break
+            
+            if change_col is not None:
+                changes = pd.to_numeric(df[change_col], errors='coerce')
+                # 涨停：涨幅>=9.8%（考虑科创板20%）
+                limit_up_count = int((changes >= 9.8).sum())
+                limit_down_count = int((changes <= -9.8).sum())
+                
+                # 科创板/创业板20%涨跌停
+                if "代码" in df.columns:
+                    kcb = df[df["代码"].str.startswith("688")]
+                    cyb = df[df["代码"].str.startswith("30")]
+                    if not kcb.empty:
+                        kcb_changes = pd.to_numeric(kcb[change_col], errors='coerce')
+                        limit_up_count += int((kcb_changes >= 19.8).sum()) - int((kcb_changes >= 9.8).sum())
+                        limit_down_count += int((kcb_changes <= -19.8).sum()) - int((kcb_changes <= -9.8).sum())
+                    if not cyb.empty:
+                        cyb_changes = pd.to_numeric(cyb[change_col], errors='coerce')
+                        limit_up_count += int((cyb_changes >= 19.8).sum()) - int((cyb_changes >= 9.8).sum())
+                        limit_down_count += int((cyb_changes <= -19.8).sum()) - int((cyb_changes <= -9.8).sum())
+                
+                total = limit_up_count + limit_down_count
+                limit_up_ratio = limit_up_count / total * 100 if total > 0 else 0
+                
+                return {
+                    "limit_up_count": limit_up_count,
+                    "limit_down_count": limit_down_count,
+                    "limit_up_ratio": round(limit_up_ratio, 1),
+                    "consecutive_board_count": 0,  # 新浪无法获取连板数据
+                    "max_consecutive_height": 0,
+                }
+    except Exception as e:
+        print(f"新浪实时行情统计涨跌停失败: {e}")
+    
+    # 方案2：尝试东财涨停池接口（可能被封）
+    try:
         limit_up_df = ak.stock_zt_pool_em(date=datetime.now().strftime("%Y%m%d"))
         limit_up_count = len(limit_up_df) if limit_up_df is not None else 0
         
-        # 跌停板池
         limit_down_df = ak.stock_zt_pool_dtgc_em(date=datetime.now().strftime("%Y%m%d"))
         limit_down_count = len(limit_down_df) if limit_down_df is not None else 0
         
-        # 连板池
         consecutive_board_df = ak.stock_zt_pool_strong_em(date=datetime.now().strftime("%Y%m%d"))
         consecutive_count = len(consecutive_board_df) if consecutive_board_df is not None else 0
         
-        # 计算封板率（涨停家数 / (涨停+跌停)）
         total = limit_up_count + limit_down_count
         limit_up_ratio = limit_up_count / total * 100 if total > 0 else 0
         
-        # 最高连板高度
         max_consecutive = 0
         if consecutive_board_df is not None and not consecutive_board_df.empty:
             if "连板数" in consecutive_board_df.columns:
@@ -66,12 +108,15 @@ def get_limit_up_down_stats():
             "max_consecutive_height": max_consecutive,
         }
     except Exception as e:
-        print(f"获取涨跌停数据失败: {e}")
+        print(f"东财涨跌停接口失败: {e}")
         return None
 
 
 def get_north_flow():
     """获取北向资金净流入
+    
+    注意：北向资金数据仅东财提供，无新浪替代。
+    东财不可用时返回None，不影响整体分析。
     
     Returns:
         dict: 净流入金额（亿元）
@@ -80,7 +125,7 @@ def get_north_flow():
         return None
     
     try:
-        # 北向资金每日净流入
+        # 北向资金每日净流入（东财接口，可能被封）
         df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
         if df is None or df.empty:
             return None
@@ -176,6 +221,9 @@ def get_index_ma_deviation():
 def get_dragon_tiger_list():
     """获取龙虎榜数据
     
+    注意：龙虎榜数据仅东财提供，无新浪替代。
+    东财不可用时返回None，不影响整体分析。
+    
     Returns:
         dict: 龙虎榜个股及买卖席位
     """
@@ -225,6 +273,9 @@ def get_dragon_tiger_list():
 
 def get_limit_up_pool_detail():
     """获取涨停板池详情（含连板信息）
+    
+    注意：涨停池详情仅东财提供，无新浪替代。
+    东财不可用时返回None，不影响整体分析。
     
     Returns:
         dict: 涨停股详情
