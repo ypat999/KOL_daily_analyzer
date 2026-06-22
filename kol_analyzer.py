@@ -363,11 +363,29 @@ class KOLAnalyzer:
         
         print("\n>>> 任务执行顺序: 微博 → 微信 → B站")
         
-        weibo_advice = self.run_weibo_task()
-        wechat_advice = self.run_wechat_task()
-        bili_advice = self.run_bili_task()
+        try:
+            weibo_advice = self.run_weibo_task()
+        except Exception as e:
+            print(f"微博任务异常: {e}")
+            weibo_advice = None
         
-        merged_advice = self.merge_investment_advice(bili_advice, wechat_advice, weibo_advice)
+        try:
+            wechat_advice = self.run_wechat_task()
+        except Exception as e:
+            print(f"微信任务异常: {e}")
+            wechat_advice = None
+        
+        try:
+            bili_advice = self.run_bili_task()
+        except Exception as e:
+            print(f"B站任务异常: {e}")
+            bili_advice = None
+        
+        try:
+            merged_advice = self.merge_investment_advice(bili_advice, wechat_advice, weibo_advice)
+        except Exception as e:
+            print(f"合并投资建议异常: {e}")
+            merged_advice = None
         
         position_result = None
         match_result = None
@@ -380,11 +398,15 @@ class KOLAnalyzer:
             
             positions = load_positions()
             if positions["stocks"] or positions["indices"]:
-                position_result, match_result, match_report = run_position_analysis(
-                    bili_advice=bili_advice,
-                    wechat_advice=wechat_advice,
-                    weibo_advice=weibo_advice
-                )
+                try:
+                    position_result, match_result, match_report = run_position_analysis(
+                        bili_advice=bili_advice,
+                        wechat_advice=wechat_advice,
+                        weibo_advice=weibo_advice
+                    )
+                except Exception as e:
+                    print(f"持仓分析异常: {e}")
+                    position_result, match_result, match_report = None, None, None
                 
                 if match_report:
                     match_report_path = os.path.join(self.archive_folder, f"持仓匹配分析_{self.current_date}.txt")
@@ -604,16 +626,32 @@ class KOLAnalyzer:
 
 if __name__ == "__main__":
     analyzer = KOLAnalyzer()
-    result = analyzer.run_all_tasks()
     
-    print("\n任务执行结果:")
-    print(f"- B站投资建议: {'有' if result['bili_advice'] else '无'}")
-    print(f"- 微信投资建议: {'有' if result['wechat_advice'] else '无'}")
-    print(f"- 微博投资建议: {'有' if result['weibo_advice'] else '无'}")
-    print(f"- 综合投资建议: {'有' if result['merged_advice'] else '无'}")
-    print(f"- 持仓分析: {'有' if result['position_result'] else '无'}")
-    print(f"- 持仓匹配: {'有' if result['match_result'] else '无'}")
-    print(f"- 执行日期: {result['date']}")
+    try:
+        result = analyzer.run_all_tasks()
+    except Exception as e:
+        print(f"\n任务执行异常: {e}")
+        import traceback
+        traceback.print_exc()
+        result = {
+            "bili_advice": None,
+            "wechat_advice": None,
+            "weibo_advice": None,
+            "merged_advice": None,
+            "position_result": None,
+            "match_result": None,
+            "date": analyzer.current_date
+        }
     
-    # 进入交互式对话模式
-    analyzer.interactive_chat(result)
+    if result:
+        print("\n任务执行结果:")
+        print(f"- B站投资建议: {'有' if result.get('bili_advice') else '无'}")
+        print(f"- 微信投资建议: {'有' if result.get('wechat_advice') else '无'}")
+        print(f"- 微博投资建议: {'有' if result.get('weibo_advice') else '无'}")
+        print(f"- 综合投资建议: {'有' if result.get('merged_advice') else '无'}")
+        print(f"- 持仓分析: {'有' if result.get('position_result') else '无'}")
+        print(f"- 持仓匹配: {'有' if result.get('match_result') else '无'}")
+        print(f"- 执行日期: {result.get('date', 'N/A')}")
+        
+        # 进入交互式对话模式
+        analyzer.interactive_chat(result)
