@@ -25,6 +25,7 @@ import tempfile
 import os
 import json
 
+from cookie_validator import _get_chrome_service
 from extract_subtitle import extract_subtitle_from_url
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
@@ -64,10 +65,11 @@ def setup_browser():
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
     # 初始化驱动
     # 使用selenium-wire的Chrome驱动
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=options
-    )
+    service = _get_chrome_service()
+    if service is None:
+        raise RuntimeError("无法获取chromedriver，请检查Chrome浏览器是否安装")
+    
+    driver = webdriver.Chrome(service=service, options=options)
     # 设置浏览器窗口尺寸为100x100
     driver.set_window_size(800, 600)
     return driver

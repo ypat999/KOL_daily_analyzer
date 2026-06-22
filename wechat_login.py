@@ -10,6 +10,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.service import Service
+from cookie_validator import _get_chrome_service
 
 def update_wechat_cookie():
     """
@@ -27,7 +28,11 @@ def update_wechat_cookie():
     
     try:
         # 初始化WebDriver
-        service = Service(ChromeDriverManager().install())
+        service = _get_chrome_service()
+        if service is None:
+            print("无法获取chromedriver，请检查Chrome浏览器是否安装")
+            return None
+        
         driver = webdriver.Chrome(service=service, options=chrome_options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         print("浏览器已启动")

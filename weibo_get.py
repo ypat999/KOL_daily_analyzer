@@ -13,6 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+from cookie_validator import _get_chrome_service
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from prediction_recorder import record_predictions_from_advice
@@ -41,10 +42,11 @@ def setup_browser():
     options.add_argument("--ignore-ssl-errors")
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
     
-    driver = webdriver.Chrome(
-        service=Service(ChromeDriverManager().install()),
-        options=options
-    )
+    service = _get_chrome_service()
+    if service is None:
+        raise RuntimeError("无法获取chromedriver，请检查Chrome浏览器是否安装")
+    
+    driver = webdriver.Chrome(service=service, options=options)
     driver.set_window_size(1000, 800)
     return driver
 
