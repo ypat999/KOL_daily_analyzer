@@ -26,9 +26,28 @@ def _get_chrome_service():
         except Exception:
             pass
     
-    # 2. 尝试常见安装路径
+    # 2. 搜索webdriver_manager缓存目录（.wdm）
+    wdm_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", "win64")
+    if os.path.exists(wdm_dir):
+        # 按版本号降序排列，优先使用最新版
+        try:
+            versions = sorted(os.listdir(wdm_dir), reverse=True)
+        except Exception:
+            versions = []
+        for ver in versions:
+            # 优先找子目录中的chromedriver.exe
+            ver_dir = os.path.join(wdm_dir, ver)
+            for root, dirs, files in os.walk(ver_dir):
+                for f in files:
+                    if f.lower() == "chromedriver.exe":
+                        exe_path = os.path.join(root, f)
+                        try:
+                            return Service(exe_path)
+                        except Exception:
+                            pass
+    
+    # 3. 尝试常见安装路径
     common_paths = [
-        os.path.expanduser("~/.wdm/drivers/chromedriver"),
         r"C:\chromedriver\chromedriver.exe",
         r"C:\tools\chromedriver.exe",
     ]
@@ -39,7 +58,7 @@ def _get_chrome_service():
             except Exception:
                 pass
     
-    # 3. 尝试webdriver_manager下载（可能因网络问题卡住）
+    # 4. 尝试webdriver_manager下载（可能因网络问题卡住）
     try:
         driver_path = ChromeDriverManager().install()
         return Service(driver_path)
