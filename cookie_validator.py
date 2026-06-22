@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import shutil
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -9,6 +10,42 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
+
+
+def _get_chrome_service():
+    """获取Chrome Service，优先使用本地chromedriver，避免每次下载
+    
+    Returns:
+        Service or None: Chrome服务对象，获取失败返回None
+    """
+    # 1. 尝试系统PATH中的chromedriver
+    chromedriver_path = shutil.which("chromedriver")
+    if chromedriver_path:
+        try:
+            return Service(chromedriver_path)
+        except Exception:
+            pass
+    
+    # 2. 尝试常见安装路径
+    common_paths = [
+        os.path.expanduser("~/.wdm/drivers/chromedriver"),
+        r"C:\chromedriver\chromedriver.exe",
+        r"C:\tools\chromedriver.exe",
+    ]
+    for p in common_paths:
+        if os.path.exists(p):
+            try:
+                return Service(p)
+            except Exception:
+                pass
+    
+    # 3. 尝试webdriver_manager下载（可能因网络问题卡住）
+    try:
+        driver_path = ChromeDriverManager().install()
+        return Service(driver_path)
+    except Exception as e:
+        print(f"下载chromedriver失败: {e}")
+        return None
 
 COOKIE_FILES = {
     "weibo": "weibo_cookies.json",
@@ -52,10 +89,11 @@ def validate_weibo_cookie() -> tuple:
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument("--ignore-certificate-errors")
         
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
+        service = _get_chrome_service()
+        if service is None:
+            return False, "无法获取chromedriver，跳过cookie验证"
+        
+        driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(15)
         driver.set_script_timeout(10)
         
@@ -229,13 +267,19 @@ def manual_login_weibo() -> bool:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
+        service = _get_chrome_service()
+        if service is None:
+            return False, "无法获取chromedriver，跳过cookie验证"
+        
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(15)
+        driver.set_script_timeout(10)
         driver.set_window_size(1000, 800)
         
-        driver.get("https://weibo.com/")
+        try:
+            driver.get("https://weibo.com/")
+        except Exception:
+            pass
         print("\n" + "="*50)
         print("请在浏览器中手动登录微博...")
         print("登录完成后，请按Enter键继续...")
@@ -274,13 +318,19 @@ def manual_login_bili() -> bool:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
+        service = _get_chrome_service()
+        if service is None:
+            return False, "无法获取chromedriver，跳过cookie验证"
+        
+        driver = webdriver.Chrome(service=service, options=options)
+        driver.set_page_load_timeout(15)
+        driver.set_script_timeout(10)
         driver.set_window_size(800, 600)
         
-        driver.get("https://www.bilibili.com")
+        try:
+            driver.get("https://www.bilibili.com")
+        except Exception:
+            pass
         print("\n" + "="*50)
         print("请在浏览器中手动登录B站...")
         print("登录完成后，请按Enter键继续...")
