@@ -56,9 +56,14 @@ def validate_weibo_cookie() -> tuple:
             service=Service(ChromeDriverManager().install()),
             options=options
         )
+        driver.set_page_load_timeout(15)
+        driver.set_script_timeout(10)
         
         try:
-            driver.get("https://weibo.com/")
+            try:
+                driver.get("https://weibo.com/")
+            except Exception:
+                pass  # 超时也继续，页面可能已部分加载
             time.sleep(2)
             
             for cookie in cookies:
@@ -67,7 +72,10 @@ def validate_weibo_cookie() -> tuple:
                 except:
                     pass
             
-            driver.refresh()
+            try:
+                driver.refresh()
+            except Exception:
+                pass  # 超时也继续
             time.sleep(3)
             
             page_source = driver.page_source
