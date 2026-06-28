@@ -629,8 +629,19 @@ if __name__ == "__main__":
     
     try:
         result = analyzer.run_all_tasks()
-    except Exception as e:
-        print(f"\n任务执行异常: {e}")
+    except KeyboardInterrupt:
+        print("\n\n程序被用户中断")
+        result = {
+            "bili_advice": None,
+            "wechat_advice": None,
+            "weibo_advice": None,
+            "merged_advice": None,
+            "position_result": None,
+            "match_result": None,
+            "date": analyzer.current_date
+        }
+    except BaseException as e:
+        print(f"\n任务执行异常: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
         result = {
