@@ -51,6 +51,34 @@ def _wait_for_rate_limit():
     _last_request_time = time.time()
 
 
+_EN_COLUMNS = {'date', 'open', 'high', 'low', 'close', 'volume', 'amount'}
+_CN_COLUMNS = {'日期', '开盘', '最高', '最低', '收盘', '成交量', '成交额'}
+_EN_TO_CN = {'date': '日期', 'open': '开盘', 'high': '最高', 'low': '最低',
+             'close': '收盘', 'volume': '成交量', 'amount': '成交额'}
+
+
+def _normalize_akshare_columns(df):
+    """统一akshare返回DataFrame的列名为中文
+    
+    新浪/东财等不同数据源列名可能为英文或中文，统一转成中文。
+    """
+    if df is None or len(df) == 0:
+        return df
+    
+    # 判断列名语言
+    col_set = set(str(c) for c in df.columns)
+    if col_set & _CN_COLUMNS:
+        # 已经是中文列名，只需补齐映射
+        return df
+    elif col_set & _EN_COLUMNS:
+        # 英文列名，映射为中文
+        rename_map = {k: v for k, v in _EN_TO_CN.items() if k in col_set}
+        return df.rename(columns=rename_map)
+    else:
+        # 无法识别的列名
+        return None
+
+
 def find_archive_dirs(base_dir=".", months=2):
     dirs = []
     cutoff = datetime.now() - timedelta(days=months * 30)
@@ -314,12 +342,10 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
             # 新浪数据源：代码需加sh/sz前缀
             sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
             df = ak.stock_zh_index_daily(symbol=sina_code)
-            # 新浪返回全量数据，手动过滤
-            if df is not None and len(df) > 0 and 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
-                df = df[(df['date'] >= start_str) & (df['date'] <= end_str)]
-                df = df.rename(columns={'date': '日期', 'open': '开盘', 'high': '最高',
-                                        'low': '最低', 'close': '收盘', 'volume': '成交量'})
+            df = _normalize_akshare_columns(df)
+            # 新浪返回全量数据，手动过滤日期范围
+            if df is not None and len(df) > 0 and '日期' in df.columns:
+                df = df[(df['日期'] >= start_str) & (df['日期'] <= end_str)]
         elif target_type == "stock":
             code_match = re.search(r'(\d{6})', target)
             if code_match:
@@ -332,15 +358,11 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
             sina_code = f"sh{code}" if code.startswith("6") else f"sz{code}"
             df = ak.stock_zh_a_daily(symbol=sina_code, start_date=start_str,
                                      end_date=end_str, adjust="qfq")
-            # 新浪列名映射
-            if df is not None and len(df) > 0 and 'date' in df.columns:
-                df = df.rename(columns={'date': '日期', 'open': '开盘', 'high': '最高',
-                                        'low': '最低', 'close': '收盘', 'volume': '成交量',
-                                        'amount': '成交额'})
+            df = _normalize_akshare_columns(df)
         else:
             return None
 
-        if df is None or len(df) == 0:
+        if df is None or len(df) == 0 or '日期' not in df.columns:
             return None
 
         df['日期'] = pd.to_datetime(df['日期'])
