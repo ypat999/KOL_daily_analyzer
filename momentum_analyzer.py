@@ -982,11 +982,22 @@ def analyze_targets(targets):
         if df is not None:
             factors = calculate_momentum_factors(df)
             if factors:
+                # 当日涨跌幅和成交量
+                daily_change = 0.0
+                volume = None
+                if len(df) >= 2:
+                    close_vals = df['收盘'].values
+                    daily_change = float((close_vals[-1] - close_vals[-2]) / close_vals[-2] * 100)
+                if '成交量' in df.columns and len(df) > 0:
+                    volume = float(df['成交量'].iloc[-1])
+                
                 results["indices"].append({
                     "code": code,
                     "name": name,
                     "reasons": reasons,
                     "latest_price": float(df['收盘'].iloc[-1]),
+                    "daily_change_pct": round(daily_change, 2),
+                    "volume": volume,
                     "momentum_factors": factors
                 })
                 print(f"  - 20日收益率: {factors['return_20d']}%")
@@ -1010,11 +1021,22 @@ def analyze_targets(targets):
         if df is not None:
             factors = calculate_momentum_factors(df)
             if factors:
+                # 当日涨跌幅和成交量
+                daily_change = 0.0
+                volume = None
+                if len(df) >= 2:
+                    close_vals = df['收盘'].values
+                    daily_change = float((close_vals[-1] - close_vals[-2]) / close_vals[-2] * 100)
+                if '成交量' in df.columns and len(df) > 0:
+                    volume = float(df['成交量'].iloc[-1])
+                
                 results["stocks"].append({
                     "code": code,
                     "name": name,
                     "reasons": reasons,
                     "latest_price": float(df['收盘'].iloc[-1]),
+                    "daily_change_pct": round(daily_change, 2),
+                    "volume": volume,
                     "momentum_factors": factors
                 })
                 print(f"  - 20日收益率: {factors['return_20d']}%")
@@ -1053,6 +1075,16 @@ def format_momentum_report(results):
         for idx in results["indices"]:
             report_lines.append(f"\n{idx['name']}({idx['code']})")
             report_lines.append(f"  最新价格: {idx['latest_price']:.2f}")
+            report_lines.append(f"  当日涨跌幅: {idx['daily_change_pct']:+.2f}%")
+            if idx.get('volume') is not None:
+                vol = idx['volume']
+                if vol >= 1e8:
+                    vol_str = f"{vol/1e8:.2f}亿"
+                elif vol >= 1e4:
+                    vol_str = f"{vol/1e4:.2f}万"
+                else:
+                    vol_str = f"{vol:.0f}"
+                report_lines.append(f"  成交量: {vol_str}")
             factors = idx['momentum_factors']
             report_lines.append(f"  20日收益率: {factors['return_20d']}%")
             report_lines.append(f"  60日收益率: {factors['return_60d']}%")
@@ -1113,6 +1145,16 @@ def format_momentum_report(results):
         for stock in results["stocks"]:
             report_lines.append(f"\n{stock['name']}({stock['code']})")
             report_lines.append(f"  最新价格: {stock['latest_price']:.2f}")
+            report_lines.append(f"  当日涨跌幅: {stock['daily_change_pct']:+.2f}%")
+            if stock.get('volume') is not None:
+                vol = stock['volume']
+                if vol >= 1e8:
+                    vol_str = f"{vol/1e8:.2f}亿"
+                elif vol >= 1e4:
+                    vol_str = f"{vol/1e4:.2f}万"
+                else:
+                    vol_str = f"{vol:.0f}"
+                report_lines.append(f"  成交量: {vol_str}")
             factors = stock['momentum_factors']
             report_lines.append(f"  20日收益率: {factors['return_20d']}%")
             report_lines.append(f"  60日收益率: {factors['return_60d']}%")
