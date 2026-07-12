@@ -343,9 +343,12 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
             sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
             df = ak.stock_zh_index_daily(symbol=sina_code)
             df = _normalize_akshare_columns(df)
-            # 新浪返回全量数据，手动过滤日期范围
+            # 新浪返回全量数据，手动过滤日期范围（统一转Timestamp避免类型不一致）
             if df is not None and len(df) > 0 and '日期' in df.columns:
-                df = df[(df['日期'] >= start_str) & (df['日期'] <= end_str)]
+                df['日期'] = pd.to_datetime(df['日期'])
+                start_ts = pd.Timestamp(start_date_dt)
+                end_ts = pd.Timestamp(end_date_dt)
+                df = df[(df['日期'] >= start_ts) & (df['日期'] <= end_ts)]
         elif target_type == "stock":
             code_match = re.search(r'(\d{6})', target)
             if code_match:
