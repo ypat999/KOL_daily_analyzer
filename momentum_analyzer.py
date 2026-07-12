@@ -325,12 +325,13 @@ def get_index_kline(code, days=150, max_retries=3):
                 sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
                 df = ak.stock_zh_index_daily(symbol=sina_code)
                 
-                # 新浪返回全量数据，手动过滤日期范围
-                if df is not None and len(df) > 0 and 'date' in df.columns:
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-                
+                # 先统一列名，再过滤日期范围
                 df = _clean_akshare_df(df)
+                if df is not None and len(df) > 0 and '日期' in df.columns:
+                    start_ts = pd.Timestamp(start_date)
+                    end_ts = pd.Timestamp(end_date)
+                    df = df[(df['日期'] >= start_ts) & (df['日期'] <= end_ts)]
+                
                 if df is not None and len(df) > 0:
                     print(f"akshare 获取指数 {code} 数据成功 ({len(df)}条)")
                     return df
