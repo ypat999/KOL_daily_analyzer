@@ -628,6 +628,345 @@ def format_portfolio_risk_report(risk_data):
     return "\n".join(lines)
 
 
+# ==================== F10 基本面与新闻公告抓取 ====================
+
+def _safe_float(v):
+    """安全转 float，nan/inf/None 返回 None（akshare 偶发 nan）"""
+    if v is None:
+        return None
+    try:
+        import math
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except (ValueError, TypeError):
+        return None
+
+
+def fetch_stock_f10(code):
+    """抓取个股F10基本面信息
+    
+    整合公司概况 + 主要股东 + 财务摘要（最近4期）
+    
+    Args:
+        code: 股票代码（如 "600519"）
+    
+    Returns:
+        dict 或 None: 包含 profile、shareholders、financials 三个子项
+    """
+    import akshare as ak
+    
+    result = {"profile": None, "shareholders": None, "financials": None}
+    
+    # 1. 公司概况（巨潮资讯）
+    try:
+        df = ak.stock_profile_cninfo(symbol=code)
+        if df is not None and len(df) > 0:
+            row = df.iloc[0]
+            result["profile"] = {
+                "name": str(row.get("公司名称", "")),
+                "industry": str(row.get("所属行业", "")),
+                "market": str(row.get("所属市场", "")),
+                "list_date": str(row.get("上市日期", "")),
+                "registered_capital": str(row.get("注册资金", "")),
+                "main_business": str(row.get("主营业务", ""))[:200],
+            }
+    except Exception as e:
+        print(f"  获取{code}公司概况失败: {e}")
+    
+    # 2. 主要股东（巨潮资讯）
+    try:
+        df = ak.stock_main_stock_holder(stock=code)
+        if df is not None and len(df) > 0:
+            # 按截至日期取最新一期
+            latest_date = df["截至日期"].iloc[0] if "截至日期" in df.columns else None
+            latest_df = df[df["截至日期"] == latest_date] if latest_date else df.head(10)
+            
+            top5 = []
+            for _, row in latest_df.head(5).iterrows():
+                top5.append({
+                    "name": str(row.get("股东名称", "")),
+                    "shares": _safe_float(row.get("持股数量")),
+                    "ratio": _safe_float(row.get("持股比例")),
+                    "type": str(row.get("股本性质", "")),
+                })
+            
+            total_holders = None
+            if "股东总数" in latest_df.columns:
+                vals = latest_df["股东总数"].dropna()
+                total_holders = float(vals.iloc[0]) if len(vals) > 0 else None
+            
+            result["shareholders"] = {
+                "as_of_date": str(latest_date),
+                "top5": top5,
+                "total_holders": total_holders,
+            }
+    except Exception as e:
+        print(f"  获取{code}主要股东失败: {e}")
+    
+    # 3. 财务摘要（新浪，取最近4期）
+    try:
+        df = ak.stock_financial_abstract(symbol=code)
+        if df is not None and len(df) > 0:
+            # 日期列从第3列开始
+            date_cols = [c for c in df.columns if c not in ("选项", "指标")]
+            recent_dates = date_cols[:4] if len(date_cols) >= 4 else date_cols
+            
+            financials = []
+            # 关键指标行
+            key_metrics = ["归母净利润", "营业总收入", "营业成本", "净利润", "基本每股收益"]
+            for metric in key_metrics:
+                row = df[df["指标"] == metric]
+                if len(row) > 0:
+                    values = {}
+                    for d in recent_dates:
+                        val = row[d].iloc[0]
+                        values[d] = _safe_float(val)
+                    financials.append({"metric": metric, "values": values})
+            
+            result["financials"] = {
+                "report_dates": recent_dates,
+                "metrics": financials,
+            }
+    except Exception as e:
+        print(f"  获取{code}财务摘要失败: {e}")
+    
+    # 至少有一个数据源成功才返回
+    if not any(result.values()):
+        return None
+    
+    return result
+
+
+def fetch_stock_news(code, limit=5):
+    """抓取个股近期新闻（东财新闻接口）
+    
+    Args:
+        code: 股票代码
+        limit: 返回条数上限
+    
+    Returns:
+        list: 新闻列表，每条含 title/time/source/summary
+    """
+    import akshare as ak
+    
+    try:
+        df = ak.stock_news_em(symbol=code)
+        if df is None or len(df) == 0:
+            return []
+        
+        news_list = []
+        for _, row in df.head(limit).iterrows():
+            content = str(row.get("新闻内容", ""))
+            news_list.append({
+                "title": str(row.get("新闻标题", "")),
+                "time": str(row.get("发布时间", "")),
+                "source": str(row.get("文章来源", "")),
+                "summary": content[:100],
+            })
+        return news_list
+    except Exception as e:
+        print(f"  获取{code}新闻失败: {e}")
+        return []
+
+
+def fetch_stock_announcements(code, days=3):
+    """抓取个股近期公告（巨潮资讯全市场公告按代码过滤）
+    
+    Args:
+        code: 股票代码
+        days: 查询最近几天
+    
+    Returns:
+        list: 公告列表，每条含 title/date/type
+    """
+    import akshare as ak
+    from datetime import datetime, timedelta
+    
+    announcements = []
+    today = datetime.now()
+    
+    for i in range(days):
+        check_date = today - timedelta(days=i)
+        date_str = check_date.strftime("%Y%m%d")
+        
+        try:
+            df = ak.stock_notice_report(symbol="全部", date=date_str)
+            if df is None or len(df) == 0:
+                continue
+            
+            # 按代码过滤
+            matched = df[df["代码"] == code]
+            if len(matched) == 0:
+                continue
+            
+            for _, row in matched.head(3).iterrows():
+                announcements.append({
+                    "title": str(row.get("公告标题", "")),
+                    "date": str(row.get("公告日期", "")),
+                    "type": str(row.get("公告类型", "")),
+                })
+            
+            if len(announcements) >= 3:
+                break
+        except Exception as e:
+            print(f"  获取{code}公告失败({date_str}): {e}")
+            continue
+    
+    return announcements[:3]
+
+
+def fetch_position_f10_and_news():
+    """遍历所有持仓股，抓取F10基本面和新闻公告
+    
+    Returns:
+        list: 每个元素为 {code, name, f10, news, announcements}
+    """
+    import time
+    
+    positions = load_positions()
+    stocks = positions.get("stocks", [])
+    
+    if not stocks:
+        print("暂无持仓，跳过F10抓取")
+        return None
+    
+    print(f"\n开始抓取 {len(stocks)} 只持仓股的F10与新闻公告...")
+    results = []
+    
+    for i, stock in enumerate(stocks):
+        code = stock["code"]
+        name = stock["name"]
+        print(f"[{i+1}/{len(stocks)}] 抓取 {name}({code})...")
+        
+        entry = {"code": code, "name": name, "f10": None, "news": [], "announcements": []}
+        
+        try:
+            entry["f10"] = fetch_stock_f10(code)
+        except Exception as e:
+            print(f"  F10抓取异常: {e}")
+        
+        try:
+            entry["news"] = fetch_stock_news(code, limit=5)
+        except Exception as e:
+            print(f"  新闻抓取异常: {e}")
+        
+        try:
+            entry["announcements"] = fetch_stock_announcements(code, days=3)
+        except Exception as e:
+            print(f"  公告抓取异常: {e}")
+        
+        results.append(entry)
+        
+        # 限流：非最后一只股票时等待
+        if i < len(stocks) - 1:
+            time.sleep(1.5)
+    
+    print(f"F10与新闻公告抓取完成，共 {len(results)} 只")
+    return results
+
+
+def format_position_f10_report(f10_data):
+    """格式化持仓F10+新闻公告报告
+    
+    Args:
+        f10_data: fetch_position_f10_and_news() 返回的列表
+    
+    Returns:
+        str: 格式化的报告文本
+    """
+    if not f10_data:
+        return ""
+    
+    lines = []
+    lines.append("=" * 60)
+    lines.append("持仓股F10基本面与新闻公告报告")
+    lines.append(f"分析日期: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("=" * 60)
+    
+    for entry in f10_data:
+        code = entry["code"]
+        name = entry["name"]
+        f10 = entry.get("f10")
+        news = entry.get("news", [])
+        anns = entry.get("announcements", [])
+        
+        lines.append(f"\n{'─' * 40}")
+        lines.append(f"  {name}({code})")
+        lines.append(f"{'─' * 40}")
+        
+        # F10 基本面
+        if f10:
+            profile = f10.get("profile")
+            if profile:
+                lines.append(f"\n  【公司概况】")
+                lines.append(f"    所属行业: {profile.get('industry', 'N/A')}")
+                lines.append(f"    所属市场: {profile.get('market', 'N/A')}")
+                lines.append(f"    上市日期: {profile.get('list_date', 'N/A')}")
+                lines.append(f"    注册资金: {profile.get('registered_capital', 'N/A')}")
+                biz = profile.get('main_business', '')
+                if biz:
+                    lines.append(f"    主营业务: {biz}")
+            
+            shareholders = f10.get("shareholders")
+            if shareholders:
+                lines.append(f"\n  【主要股东】截至 {shareholders.get('as_of_date', 'N/A')}")
+                if shareholders.get('total_holders'):
+                    th = shareholders['total_holders']
+                    lines.append(f"    股东总数: {int(th):,}")
+                for j, sh in enumerate(shareholders.get("top5", []), 1):
+                    ratio = sh.get("ratio")
+                    ratio_str = f"{ratio:.2f}%" if ratio is not None else "N/A"
+                    lines.append(f"    {j}. {sh['name']} - {ratio_str} ({sh['type']})")
+            
+            financials = f10.get("financials")
+            if financials and financials.get("metrics"):
+                lines.append(f"\n  【财务摘要】")
+                dates = financials.get("report_dates", [])
+                # 表头
+                header = "    指标"
+                for d in dates:
+                    header += f" | {d}"
+                lines.append(header)
+                lines.append("    " + "-" * (len(header) - 4))
+                for m in financials["metrics"]:
+                    row_str = f"    {m['metric']}"
+                    for d in dates:
+                        val = m["values"].get(d)
+                        if val is not None:
+                            if abs(val) >= 1e8:
+                                row_str += f" | {val/1e8:.2f}亿"
+                            elif abs(val) >= 1e4:
+                                row_str += f" | {val/1e4:.2f}万"
+                            else:
+                                row_str += f" | {val:.2f}"
+                        else:
+                            row_str += " | N/A"
+                    lines.append(row_str)
+        else:
+            lines.append(f"\n  【F10基本面】数据获取失败")
+        
+        # 近期新闻
+        if news:
+            lines.append(f"\n  【近期新闻】{len(news)}条")
+            for n in news:
+                lines.append(f"    • [{n['time']}] {n['title']} ({n['source']})")
+        else:
+            lines.append(f"\n  【近期新闻】无")
+        
+        # 近期公告
+        if anns:
+            lines.append(f"\n  【近期公告】{len(anns)}条")
+            for a in anns:
+                lines.append(f"    • [{a['date']}] {a['title']} [{a['type']}]")
+        else:
+            lines.append(f"\n  【近期公告】无")
+    
+    lines.append("\n" + "=" * 60)
+    return "\n".join(lines)
+
+
 def run_position_analysis(bili_advice=None, wechat_advice=None, weibo_advice=None):
     """运行完整的持仓分析流程
     

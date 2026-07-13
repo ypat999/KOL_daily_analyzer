@@ -8,7 +8,7 @@ from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
 from prediction_recorder import record_predictions_from_advice, generate_yesterday_review
-from position_manager import run_position_analysis, list_positions, load_positions, calculate_portfolio_risk, format_portfolio_risk_report
+from position_manager import run_position_analysis, list_positions, load_positions, calculate_portfolio_risk, format_portfolio_risk_report, fetch_position_f10_and_news, format_position_f10_report
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
@@ -468,6 +468,18 @@ class KOLAnalyzer:
                         print(f"持仓动量分析已保存到: {position_report_path}")
                     except Exception as e:
                         print(f"保存持仓动量分析失败: {str(e)}")
+
+                    # F10基本面与新闻公告
+                    try:
+                        f10_data = fetch_position_f10_and_news()
+                        if f10_data:
+                            f10_report = format_position_f10_report(f10_data)
+                            f10_report_path = os.path.join(self.archive_folder, f"持仓F10新闻公告_{self.current_date}.txt")
+                            with open(f10_report_path, "w", encoding="utf-8") as f:
+                                f.write(f10_report)
+                            print(f"持仓F10新闻公告已保存到: {f10_report_path}")
+                    except Exception as e:
+                        print(f"持仓F10新闻公告抓取失败（不影响主流程）: {str(e)}")
             else:
                 print("暂无持仓数据，跳过持仓分析")
                 print("提示: 使用 position_manager.py 添加持仓信息")
@@ -539,6 +551,15 @@ class KOLAnalyzer:
             try:
                 with open(match_path, "r", encoding="utf-8") as f:
                     context_parts.append(f"【持仓匹配分析】\n{f.read()}")
+            except Exception:
+                pass
+
+        # 持仓F10基本面与新闻公告
+        f10_path = os.path.join(self.archive_folder, f"持仓F10新闻公告_{self.current_date}.txt")
+        if os.path.exists(f10_path):
+            try:
+                with open(f10_path, "r", encoding="utf-8") as f:
+                    context_parts.append(f"【持仓股F10基本面与新闻公告】\n{f.read()}")
             except Exception:
                 pass
         
