@@ -222,4 +222,5 @@ wechat_cookies*
 deepseek_api_key*
 weibo_cookies.json
 positions.json
+push_config.json
 *.json
