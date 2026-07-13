@@ -9,6 +9,7 @@ from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
 from prediction_recorder import record_predictions_from_advice, generate_yesterday_review
 from position_manager import run_position_analysis, list_positions, load_positions, calculate_portfolio_risk, format_portfolio_risk_report, fetch_position_f10_and_news, format_position_f10_report
+from wechat_push import push_to_wechat
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
@@ -487,7 +488,21 @@ class KOLAnalyzer:
         print("\n" + "="*60)
         print("所有KOL分析任务完成")
         print("="*60)
-        
+
+        # 推送综合投资建议到微信（PushPlus）
+        try:
+            if merged_advice:
+                ok, msg = push_to_wechat(
+                    f"KOL分析报告 {self.current_date}",
+                    merged_advice
+                )
+                if ok:
+                    print(f"✓ 综合投资建议已推送到微信: {msg}")
+                else:
+                    print(f"微信推送未成功（不影响主流程）: {msg}")
+        except Exception as e:
+            print(f"微信推送异常（不影响主流程）: {e}")
+
         return {
             "bili_advice": bili_advice,
             "wechat_advice": wechat_advice,
