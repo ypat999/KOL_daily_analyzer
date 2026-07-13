@@ -223,4 +223,5 @@ deepseek_api_key*
 weibo_cookies.json
 positions.json
 push_config.json
+signal_kb.jsonl
 *.json
