@@ -10,6 +10,7 @@
 数据源：akshare（优先）+ yfinance（兜底）
 """
 
+import time
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
@@ -38,9 +39,22 @@ def get_limit_up_down_stats():
     if not AKSHARE_AVAILABLE:
         return None
     
-    # 方案1：用新浪实时行情统计涨跌停
+    # 方案1：用新浪实时行情统计涨跌停（带重试，应对偶发 Connection aborted）
+    df = None
+    for attempt in range(3):
+        try:
+            df = ak.stock_zh_a_spot()
+            if df is not None and not df.empty:
+                break
+        except Exception as e:
+            if attempt < 2:
+                wait = (attempt + 1) * 2
+                print(f"新浪实时行情获取失败（第{attempt + 1}次），{wait}秒后重试: {e}")
+                time.sleep(wait)
+            else:
+                print(f"新浪实时行情统计涨跌停失败: {e}")
+
     try:
-        df = ak.stock_zh_a_spot()
         if df is not None and not df.empty:
             # 新浪返回列名可能含"涨跌幅"
             change_col = None
@@ -48,17 +62,17 @@ def get_limit_up_down_stats():
                 if "涨跌幅" in str(col) or "change_pct" in str(col).lower():
                     change_col = col
                     break
-            
+
             if change_col is not None:
                 changes = pd.to_numeric(df[change_col], errors='coerce')
                 # 涨停：涨幅>=9.8%（考虑科创板20%）
                 limit_up_count = int((changes >= 9.8).sum())
                 limit_down_count = int((changes <= -9.8).sum())
-                
+
                 # 科创板/创业板20%涨跌停
                 if "代码" in df.columns:
-                    kcb = df[df["代码"].str.startswith("688")]
-                    cyb = df[df["代码"].str.startswith("30")]
+                    kcb = df[df["代码"].astype(str).str.startswith("688")]
+                    cyb = df[df["代码"].astype(str).str.startswith("30")]
                     if not kcb.empty:
                         kcb_changes = pd.to_numeric(kcb[change_col], errors='coerce')
                         limit_up_count += int((kcb_changes >= 19.8).sum()) - int((kcb_changes >= 9.8).sum())
@@ -67,10 +81,10 @@ def get_limit_up_down_stats():
                         cyb_changes = pd.to_numeric(cyb[change_col], errors='coerce')
                         limit_up_count += int((cyb_changes >= 19.8).sum()) - int((cyb_changes >= 9.8).sum())
                         limit_down_count += int((cyb_changes <= -19.8).sum()) - int((cyb_changes <= -9.8).sum())
-                
+
                 total = limit_up_count + limit_down_count
                 limit_up_ratio = limit_up_count / total * 100 if total > 0 else 0
-                
+
                 return {
                     "limit_up_count": limit_up_count,
                     "limit_down_count": limit_down_count,
@@ -114,37 +128,44 @@ def get_limit_up_down_stats():
 
 def get_north_flow():
     """获取北向资金净流入
-    
-    注意：北向资金数据仅东财提供，无新浪替代。
-    东财不可用时返回None，不影响整体分析。
-    
+
+    数据源：东财沪深港通历史数据（ak.stock_hsgt_hist_em）。
+    注意：北向资金实时数据自 2024-08-16 起停止公布（交易所规则变更），
+    此处取最后一条有效历史数据，并标记 is_stale=True 以便报告提示。
+
     Returns:
-        dict: 净流入金额（亿元）
+        dict: 净流入金额（亿元）、日期、是否过期
     """
     if not AKSHARE_AVAILABLE:
         return None
-    
+
     try:
-        # 北向资金每日净流入（东财接口，可能被封）
-        df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
+        # 北向资金历史数据（东财接口）
+        df = ak.stock_hsgt_hist_em(symbol="北向资金")
         if df is None or df.empty:
             return None
-        
-        # 取最近一条
+
+        # 2024-08-16 后 '当日成交净买额' 全为 NaN，过滤掉
+        if "当日成交净买额" in df.columns:
+            df = df.dropna(subset=["当日成交净买额"])
+        if df is None or df.empty:
+            return None
+
         latest = df.iloc[-1]
-        date_str = str(latest.get("日期", latest.get("date", "")))[:10]
-        net_flow = latest.get("当日净流入", latest.get("净流入", 0))
-        
-        # 转换为亿元
-        if net_flow:
-            net_flow_yi = float(net_flow) / 1e8
-        else:
+        date_str = str(latest.get("日期", ""))[:10]
+        net_flow = latest.get("当日成交净买额", 0)
+
+        # stock_hsgt_hist_em 返回的净买额单位已是亿元，无需再除 1e8
+        try:
+            net_flow_yi = float(net_flow) if net_flow is not None else 0
+        except (TypeError, ValueError):
             net_flow_yi = 0
-        
+
         return {
             "date": date_str,
             "net_flow_yi": round(net_flow_yi, 2),
             "direction": "净流入" if net_flow_yi > 0 else "净流出",
+            "is_stale": date_str < "2024-08-17",  # 实时数据停止公布日
         }
     except Exception as e:
         print(f"获取北向资金数据失败: {e}")
@@ -172,16 +193,20 @@ def get_index_ma_deviation():
         try:
             if AKSHARE_AVAILABLE:
                 df = ak.stock_zh_index_daily(symbol=f"sh{code}" if code.startswith("000") else f"sz{code}")
+                # 新浪返回英文列名，统一映射为中文
+                _col_map = {'date': '日期', 'open': '开盘', 'high': '最高',
+                            'low': '最低', 'close': '收盘', 'volume': '成交量'}
+                df = df.rename(columns={k: v for k, v in _col_map.items() if k in df.columns})
             elif YFINANCE_AVAILABLE:
                 yf_code = f"{code}.SS" if code.startswith("000") else f"{code}.SZ"
                 df = yf.download(yf_code, period="6mo", progress=False)
                 df = df.rename(columns={"Close": "收盘", "Date": "日期"})
             else:
                 continue
-            
-            if df is None or len(df) < 60:
+
+            if df is None or len(df) < 60 or "收盘" not in df.columns:
                 continue
-            
+
             close = df["收盘"].values.astype(float)
             current = close[-1]
             
@@ -232,20 +257,20 @@ def get_dragon_tiger_list():
     
     try:
         today = datetime.now().strftime("%Y%m%d")
-        # 龙虎榜个股明细
-        df = ak.stock_lhb_detail_em(
-            start_date=today,
-            end_date=today,
-        )
+        # 龙虎榜个股明细（东财无数据时可能抛 TypeError，需逐日回退）
+        df = None
+        for try_date in (today, (datetime.now() - timedelta(days=1)).strftime("%Y%m%d"),
+                         (datetime.now() - timedelta(days=2)).strftime("%Y%m%d")):
+            try:
+                df = ak.stock_lhb_detail_em(start_date=try_date, end_date=try_date)
+                if df is not None and not df.empty:
+                    break
+            except TypeError:
+                # 东财返回 result=None 时 akshare 内部抛 'NoneType' not subscriptable，视为无数据
+                continue
+
         if df is None or df.empty:
-            # 尝试最近交易日
-            yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-            df = ak.stock_lhb_detail_em(
-                start_date=yesterday,
-                end_date=yesterday,
-            )
-        
-        if df is None or df.empty:
+            print("龙虎榜数据暂无（当日及最近两日无数据）")
             return None
         
         # 取前10只
@@ -442,6 +467,8 @@ def run_market_breadth_analysis():
     if north_flow:
         lines.append(f"\n【北向资金】")
         lines.append(f"  {north_flow['date']} {north_flow['direction']} {abs(north_flow['net_flow_yi'])}亿元")
+        if north_flow.get("is_stale"):
+            lines.append(f"  ⚠ 实时数据自 2024-08-16 起停止公布，以上为最后一条历史数据，仅作参考")
     else:
         lines.append(f"\n【北向资金】数据获取失败")
     
