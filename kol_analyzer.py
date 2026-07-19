@@ -13,6 +13,8 @@ from wechat_push import push_to_wechat
 from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
+from fund_flow_analysis import run_fund_flow_analysis
+from momentum_analyzer import run_position_relative_strength, format_relative_strength_report
 from signal_knowledge_base import format_kb_summary_for_prompt, record_signals_from_analysis, update_signal_outcomes
 from advice_history import format_history_for_prompt, record_advice
 from deepseek_summary import deepseek_chat
@@ -187,6 +189,28 @@ class KOLAnalyzer:
                 print("已注入持仓组合风险分析到合并prompt")
         except Exception as e:
             print(f"持仓组合风险分析失败（不影响主流程）: {e}")
+
+        # 资金面分析（行业/概念资金流、个股资金流、持仓股资金流、两融余额）
+        try:
+            positions_for_fund = load_positions()
+            fund_flow_report = run_fund_flow_analysis(positions_for_fund)
+            if fund_flow_report:
+                combined_content += f"=== 资金面分析（行业/概念/个股资金流+两融） ===\n{fund_flow_report}\n\n"
+                print("已注入资金面分析到合并prompt")
+        except Exception as e:
+            print(f"资金面分析失败（不影响主流程）: {e}")
+
+        # 持仓股相对所属行业强弱（RS = 个股涨幅 - 行业涨幅）
+        try:
+            f10_data_for_rs = fetch_position_f10_and_news()
+            if f10_data_for_rs:
+                rs_data = run_position_relative_strength(f10_data_for_rs)
+                if rs_data and rs_data.get("results"):
+                    rs_report = format_relative_strength_report(rs_data)
+                    combined_content += f"=== 持仓股相对所属行业强弱 ===\n{rs_report}\n\n"
+                    print("已注入持仓股相对强弱到合并prompt")
+        except Exception as e:
+            print(f"持仓股相对强弱分析失败（不影响主流程）: {e}")
         
         # 信号-胜率知识库：先更新历史信号收益，再注入摘要
         try:

@@ -817,52 +817,111 @@ def fetch_stock_announcements(code, days=3):
     return announcements[:3]
 
 
+def fetch_position_restricted_release(days=30):
+    """一次性获取未来N天全市场限售解禁明细，按持仓股代码分组
+
+    一次调用 stock_restricted_release_detail_em 获取全市场解禁数据，
+    再按持仓股代码过滤，避免逐股查询导致大量请求。
+
+    Args:
+        days: 查询未来N天内的解禁
+
+    Returns:
+        dict: {code: [{date, type, shares, actual_shares, market_value, ratio}, ...]}
+    """
+    import akshare as ak
+    from datetime import datetime, timedelta
+
+    try:
+        start_date = datetime.now().strftime("%Y%m%d")
+        end_date = (datetime.now() + timedelta(days=days)).strftime("%Y%m%d")
+        df = ak.stock_restricted_release_detail_em(
+            start_date=start_date, end_date=end_date
+        )
+        if df is None or df.empty:
+            return {}
+
+        # 按"股票代码"列分组
+        code_col = "股票代码" if "股票代码" in df.columns else df.columns[1]
+        restricted_map = {}
+        for _, row in df.iterrows():
+            code = str(row.get(code_col, "")).strip()
+            if not code:
+                continue
+            restricted_map.setdefault(code, []).append({
+                "date": str(row.get("解禁时间", ""))[:10],
+                "type": str(row.get("限售股类型", "")),
+                "shares": _safe_float(row.get("解禁数量")),
+                "actual_shares": _safe_float(row.get("实际解禁数量")),
+                "market_value": _safe_float(row.get("实际解禁市值")),
+                "ratio": _safe_float(row.get("占解禁前流通市值比例")),
+            })
+        return restricted_map
+    except Exception as e:
+        print(f"获取全市场限售解禁失败: {e}")
+        return {}
+
+
 def fetch_position_f10_and_news():
     """遍历所有持仓股，抓取F10基本面和新闻公告
-    
+
     Returns:
-        list: 每个元素为 {code, name, f10, news, announcements}
+        list: 每个元素为 {code, name, f10, news, announcements, restricted_release}
     """
     import time
-    
+
     positions = load_positions()
     stocks = positions.get("stocks", [])
-    
+
     if not stocks:
         print("暂无持仓，跳过F10抓取")
         return None
-    
+
     print(f"\n开始抓取 {len(stocks)} 只持仓股的F10与新闻公告...")
+
+    # 一次性获取全市场未来30天解禁，按持仓股过滤
+    print("获取全市场限售解禁数据（一次性）...")
+    restricted_map = fetch_position_restricted_release(days=30)
+    if restricted_map:
+        print(f"  全市场解禁数据获取成功，共 {len(restricted_map)} 只股票有待解禁")
+
     results = []
-    
+
     for i, stock in enumerate(stocks):
         code = stock["code"]
         name = stock["name"]
         print(f"[{i+1}/{len(stocks)}] 抓取 {name}({code})...")
-        
-        entry = {"code": code, "name": name, "f10": None, "news": [], "announcements": []}
-        
+
+        entry = {
+            "code": code,
+            "name": name,
+            "f10": None,
+            "news": [],
+            "announcements": [],
+            "restricted_release": restricted_map.get(code, []),
+        }
+
         try:
             entry["f10"] = fetch_stock_f10(code)
         except Exception as e:
             print(f"  F10抓取异常: {e}")
-        
+
         try:
             entry["news"] = fetch_stock_news(code, limit=5)
         except Exception as e:
             print(f"  新闻抓取异常: {e}")
-        
+
         try:
             entry["announcements"] = fetch_stock_announcements(code, days=3)
         except Exception as e:
             print(f"  公告抓取异常: {e}")
-        
+
         results.append(entry)
-        
+
         # 限流：非最后一只股票时等待
         if i < len(stocks) - 1:
             time.sleep(1.5)
-    
+
     print(f"F10与新闻公告抓取完成，共 {len(results)} 只")
     return results
 
@@ -891,6 +950,7 @@ def format_position_f10_report(f10_data):
         f10 = entry.get("f10")
         news = entry.get("news", [])
         anns = entry.get("announcements", [])
+        restricted = entry.get("restricted_release", [])
         
         lines.append(f"\n{'─' * 40}")
         lines.append(f"  {name}({code})")
@@ -962,7 +1022,27 @@ def format_position_f10_report(f10_data):
                 lines.append(f"    • [{a['date']}] {a['title']} [{a['type']}]")
         else:
             lines.append(f"\n  【近期公告】无")
-    
+
+        # 限售解禁（未来30天）
+        if restricted:
+            lines.append(f"\n  【限售解禁（未来30天）】{len(restricted)}笔")
+            total_value = sum(r.get("market_value", 0) or 0 for r in restricted)
+            for r in restricted:
+                mv = r.get("market_value") or 0
+                mv_yi = mv / 1e8 if mv else 0
+                ratio = r.get("ratio") or 0
+                shares = r.get("shares") or 0
+                shares_wan = shares / 1e4 if shares else 0
+                lines.append(
+                    f"    • [{r.get('date', 'N/A')}] {r.get('type', '')} | "
+                    f"解禁{shares_wan:.2f}万股 | 市值{mv_yi:.2f}亿 | "
+                    f"占流通{ratio:.2f}%"
+                )
+            if total_value:
+                lines.append(f"    合计解禁市值: {total_value/1e8:.2f}亿")
+        else:
+            lines.append(f"\n  【限售解禁】未来30天无解禁 ✓")
+
     lines.append("\n" + "=" * 60)
     return "\n".join(lines)
 

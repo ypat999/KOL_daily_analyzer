@@ -1267,6 +1267,302 @@ def run_momentum_analysis(bili_advice=None, wechat_advice=None, weibo_advice=Non
     return report, results
 
 
+# ============================================================
+# 个股 vs 所属行业 相对强弱（Relative Strength）
+# ============================================================
+
+def get_stock_industry_em(industry):
+    """将任意来源的行业名映射为东财行业名
+
+    巨潮行业名（如"农业"）与东财行业名（如"种植业"）不一致会导致
+    stock_board_industry_hist_em 查不到K线。本函数用全行业列表做模糊匹配。
+
+    匹配规则：
+    1. 精确匹配（去除空白与罗马数字后缀 Ⅲ/II）
+    2. 行业名包含输入子串（如 "农" → "种植业"、"农产品加工"）
+    3. 输入包含行业名子串
+    多个匹配时取最短名（最具体）。
+
+    Args:
+        industry: 任意来源的行业名
+
+    Returns:
+        str: 东财行业名（未匹配返回原 industry）
+    """
+    if not AKSHARE_AVAILABLE or not industry:
+        return industry
+    try:
+        df = ak.stock_board_industry_name_em()
+        if df is None or df.empty or "板块名称" not in df.columns:
+            return industry
+        all_names = df["板块名称"].astype(str).tolist()
+
+        # 1. 精确匹配
+        if industry in all_names:
+            return industry
+
+        # 2. 子串匹配（双向）
+        candidates = []
+        for name in all_names:
+            if not name:
+                continue
+            if industry in name or name in industry:
+                candidates.append(name)
+
+        if candidates:
+            # 取最短名（最具体）
+            return min(candidates, key=len)
+        return industry
+    except Exception as e:
+        print(f"  东财行业匹配失败: {e}")
+        return industry
+
+
+def get_industry_kline(industry_name, days=30):
+    """获取行业板块日K线（东财行业）
+
+    Args:
+        industry_name: 行业名称（如 "电力"、"种植业"），需与东财行业分类一致
+        days: 获取的日历日天数（实际交易日约2/3）
+
+    Returns:
+        DataFrame 或 None，列含 '日期' '收盘' 等
+    """
+    if not AKSHARE_AVAILABLE:
+        return None
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+
+    # 东财接口偶发超时，3次指数退避重试
+    for attempt in range(3):
+        try:
+            df = ak.stock_board_industry_hist_em(
+                symbol=industry_name,
+                period="日k",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="",
+            )
+            if df is not None and not df.empty:
+                return df
+            return None
+        except Exception as e:
+            if attempt < 2:
+                wait = (attempt + 1) * 2
+                print(f"  获取行业 {industry_name} K线失败（第{attempt+1}次），{wait}秒后重试: {e}")
+                time.sleep(wait)
+            else:
+                print(f"  获取行业 {industry_name} K线失败: {e}")
+    return None
+
+
+def _calc_period_pct(df, days):
+    """计算最近N日涨跌幅（基于收盘价）"""
+    if df is None or len(df) < days + 1:
+        return None
+    close = df["收盘"].values.astype(float)
+    end = close[-1]
+    start = close[-1 - days]
+    if start == 0:
+        return None
+    return round((end / start - 1) * 100, 2)
+
+
+def calculate_relative_strength(stock_code, industry_name, periods=(5, 20)):
+    """计算个股相对所属行业的相对强弱
+
+    RS = 个股N日涨幅 - 行业N日涨幅
+
+    Args:
+        stock_code: 股票代码
+        industry_name: 行业名称
+        periods: 计算的周期列表（默认5日和20日）
+
+    Returns:
+        dict 或 None
+    """
+    # 加大到周期3倍+10，确保能算出最长周期数据（日历日→交易日约2/3）
+    fetch_days = max(periods) * 3 + 10
+    # 行业名归一化到东财行业分类
+    matched_industry = get_stock_industry_em(industry_name)
+    stock_df = get_stock_kline(stock_code, days=fetch_days)
+    industry_df = get_industry_kline(matched_industry, days=fetch_days)
+
+    if stock_df is None or industry_df is None:
+        return None
+
+    result = {
+        "code": stock_code,
+        "industry": matched_industry,
+        "periods": {},
+    }
+    for p in periods:
+        s_pct = _calc_period_pct(stock_df, p)
+        i_pct = _calc_period_pct(industry_df, p)
+        if s_pct is None or i_pct is None:
+            continue
+        result["periods"][p] = {
+            "stock_pct": s_pct,
+            "industry_pct": i_pct,
+            "rs": round(s_pct - i_pct, 2),
+        }
+
+    # 综合判断（以最长周期为主）
+    if result["periods"]:
+        longest_p = max(result["periods"].keys())
+        rs_long = result["periods"][longest_p]["rs"]
+        if rs_long > 2:
+            result["status"] = "强于行业"
+        elif rs_long < -2:
+            result["status"] = "弱于行业"
+        else:
+            result["status"] = "持平"
+    else:
+        result["status"] = "数据不足"
+
+    return result
+
+
+def run_position_relative_strength(position_f10_data, periods=(5, 20)):
+    """批量计算持仓股相对所属行业的相对强弱
+
+    Args:
+        position_f10_data: fetch_position_f10_and_news() 返回的列表，复用其中的行业归属
+        periods: 计算周期
+
+    Returns:
+        dict: {results: [...], analysis_date: ...}
+    """
+    if not position_f10_data:
+        return None
+
+    print("\n" + "=" * 50)
+    print("持仓股相对所属行业强弱分析")
+    print("=" * 50)
+
+    # 行业K线缓存，避免同行业多次请求
+    industry_cache = {}
+    results = []
+
+    for i, entry in enumerate(position_f10_data):
+        code = entry.get("code", "")
+        name = entry.get("name", "")
+        f10 = entry.get("f10") or {}
+        profile = f10.get("profile") if f10 else None
+        industry = profile.get("industry", "") if profile else ""
+
+        # 跳过现金/无效代码
+        if not code or code == "000000" or "现金" in name:
+            continue
+        # 长度不为6或非数字（如 02050 录入错误）也跳过
+        if len(code) != 6 or not code.isdigit():
+            continue
+
+        # 优先使用东财行业归属，避免巨潮行业名（如"农业"）与东财（如"种植业"）不一致
+        em_industry = get_stock_industry_em(industry)
+        if em_industry:
+            industry = em_industry
+
+        if not industry:
+            print(f"[{i+1}] {name}({code}) 无行业归属，跳过")
+            continue
+
+        print(f"[{i+1}] {name}({code}) 行业:{industry}")
+
+        # 加大到周期3倍+10，确保能算出最长周期数据
+        fetch_days = max(periods) * 3 + 10
+
+        # 复用行业缓存
+        if industry not in industry_cache:
+            industry_cache[industry] = get_industry_kline(
+                industry, days=fetch_days
+            )
+
+        stock_df = get_stock_kline(code, days=fetch_days)
+        industry_df = industry_cache[industry]
+
+        if stock_df is None or industry_df is None:
+            print(f"  数据获取失败")
+            continue
+
+        item = {
+            "code": code,
+            "name": name,
+            "industry": industry,
+            "periods": {},
+        }
+        for p in periods:
+            s_pct = _calc_period_pct(stock_df, p)
+            i_pct = _calc_period_pct(industry_df, p)
+            if s_pct is None or i_pct is None:
+                continue
+            item["periods"][p] = {
+                "stock_pct": s_pct,
+                "industry_pct": i_pct,
+                "rs": round(s_pct - i_pct, 2),
+            }
+
+        if item["periods"]:
+            longest_p = max(item["periods"].keys())
+            rs_long = item["periods"][longest_p]["rs"]
+            if rs_long > 2:
+                item["status"] = "强于行业"
+            elif rs_long < -2:
+                item["status"] = "弱于行业"
+            else:
+                item["status"] = "持平"
+            print(f"  RS{longest_p}日: {rs_long:+.2f}% | {item['status']}")
+        else:
+            item["status"] = "数据不足"
+            print(f"  数据不足")
+
+        results.append(item)
+
+    return {
+        "results": results,
+        "analysis_date": datetime.now().strftime("%Y-%m-%d"),
+    }
+
+
+def format_relative_strength_report(rs_data):
+    """格式化相对强弱报告"""
+    if not rs_data or not rs_data.get("results"):
+        return ""
+
+    lines = []
+    lines.append("\n" + "=" * 60)
+    lines.append("持仓股相对所属行业强弱分析")
+    lines.append(f"分析日期: {rs_data.get('analysis_date', '')}")
+    lines.append("=" * 60)
+    lines.append("  说明: RS = 个股涨幅 - 行业涨幅；正值表示强于行业")
+    lines.append("  " + "-" * 56)
+
+    for item in rs_data["results"]:
+        code = item.get("code", "")
+        name = item.get("name", "")
+        industry = item.get("industry", "N/A")
+        status = item.get("status", "")
+        periods = item.get("periods", {})
+
+        status_emoji = {
+            "强于行业": "★",
+            "弱于行业": "▽",
+            "持平": "=",
+            "数据不足": "?",
+        }.get(status, "")
+        lines.append(f"\n  {status_emoji} {name}({code}) | 行业: {industry} | {status}")
+
+        for p in sorted(periods.keys()):
+            d = periods[p]
+            lines.append(
+                f"    {p}日: 个股{d['stock_pct']:+.2f}% vs 行业{d['industry_pct']:+.2f}% "
+                f"| RS {d['rs']:+.2f}%"
+            )
+
+    lines.append("\n" + "=" * 60)
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     test_advice = """
     今日市场分析：
