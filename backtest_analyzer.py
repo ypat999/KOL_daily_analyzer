@@ -292,14 +292,25 @@ def _resolve_stock_code(target_name):
         return STOCK_CODE_MAP[target_name]
     try:
         _wait_for_rate_limit()
-        # 优先使用新浪实时行情
-        df = ak.stock_zh_a_spot()
+        # 优先使用新浪实时行情（3次重试，应对 ConnectionError）
+        df = None
+        for attempt in range(3):
+            try:
+                df = ak.stock_zh_a_spot()
+                if df is not None and not df.empty:
+                    break
+            except Exception:
+                if attempt < 2:
+                    time.sleep((attempt + 1) * 2)
+                continue
         if df is None or df.empty:
             df = ak.stock_zh_a_spot_em()
         for _, row in df.iterrows():
             name = str(row.get("名称", ""))
             code = str(row.get("代码", ""))
             if name == target_name:
+                # 剥离可能带有的 sh/sz 前缀，确保纯6位数字
+                code = re.sub(r'^(sh|sz|SH|SZ)', '', code)
                 STOCK_CODE_MAP[target_name] = code
                 return code
     except Exception:
@@ -339,9 +350,18 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
             if not code:
                 return None
 
-            # 新浪数据源：代码需加sh/sz前缀
+            # 新浪数据源：代码需加sh/sz前缀（3次重试，应对SSL/Connection错误）
             sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
-            df = ak.stock_zh_index_daily(symbol=sina_code)
+            df = None
+            for attempt in range(3):
+                try:
+                    df = ak.stock_zh_index_daily(symbol=sina_code)
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
+                    if attempt < 2:
+                        time.sleep((attempt + 1) * 2)
+                    continue
             df = _normalize_akshare_columns(df)
             # 新浪返回全量数据，手动过滤日期范围（统一转Timestamp避免类型不一致）
             if df is not None and len(df) > 0 and '日期' in df.columns:
@@ -357,10 +377,21 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
                 code = _resolve_stock_code(target)
             if not code:
                 return None
-            # 新浪数据源：代码需加sh/sz前缀
+            # 剥离可能带有的 sh/sz 前缀（_resolve_stock_code 可能返回带前缀的代码）
+            code = re.sub(r'^(sh|sz|SH|SZ)', '', code)
+            # 新浪数据源：代码需加sh/sz前缀（3次重试，应对SSL/Connection错误）
             sina_code = f"sh{code}" if code.startswith("6") else f"sz{code}"
-            df = ak.stock_zh_a_daily(symbol=sina_code, start_date=start_str,
-                                     end_date=end_str, adjust="qfq")
+            df = None
+            for attempt in range(3):
+                try:
+                    df = ak.stock_zh_a_daily(symbol=sina_code, start_date=start_str,
+                                             end_date=end_str, adjust="qfq")
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
+                    if attempt < 2:
+                        time.sleep((attempt + 1) * 2)
+                    continue
             df = _normalize_akshare_columns(df)
         else:
             return None
