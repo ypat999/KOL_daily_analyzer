@@ -1380,7 +1380,7 @@ def calculate_relative_strength(stock_code, industry_name, periods=(5, 20)):
         dict 或 None
     """
     # 加大到周期3倍+10，确保能算出最长周期数据（日历日→交易日约2/3）
-    fetch_days = max(periods) * 3 + 10
+    fetch_days = max(periods) + 15  # 20交易日≈30日历日，+15余量
     # 行业名归一化到东财行业分类
     matched_industry = get_stock_industry_em(industry_name)
     stock_df = get_stock_kline(stock_code, days=fetch_days)
@@ -1468,7 +1468,7 @@ def run_position_relative_strength(position_f10_data, periods=(5, 20)):
         print(f"[{i+1}] {name}({code}) 行业:{industry}")
 
         # 加大到周期3倍+10，确保能算出最长周期数据
-        fetch_days = max(periods) * 3 + 10
+        fetch_days = max(periods) + 15  # 20交易日≈30日历日，+15余量
 
         # 复用行业缓存
         if industry not in industry_cache:
