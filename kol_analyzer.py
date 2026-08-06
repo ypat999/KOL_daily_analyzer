@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from bili_summary import run_bili_task
-from wechat_get import run_wechat_task
+from wechat_weread import run_wechat_task, WECHAT_ENABLED
 from weibo_get import run_weibo_task
 from deepseek_summary import deepseek_summary
 from momentum_analyzer import run_momentum_analysis
@@ -60,7 +60,11 @@ class KOLAnalyzer:
         print("\n" + "="*50)
         print("开始执行微信公众号文章分析任务")
         print("="*50)
-        
+
+        if not WECHAT_ENABLED:
+            print("微信任务已禁用（WECHAT_ENABLED=False），跳过执行")
+            return None
+
         wechat_advice_path = os.path.join(self.archive_folder, f"wechat_投资建议_{self.current_date}.txt")
         if os.path.exists(wechat_advice_path):
             print(f"微信投资建议文件已存在: {wechat_advice_path}")

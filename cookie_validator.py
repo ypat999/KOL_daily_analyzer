@@ -11,6 +11,35 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
+# ===== 微信任务总开关 =====
+# 注意：微信抓取已切换到微信读书桥接版（wechat_weread.py，普通微信号扫码，
+# 与 mp 后台 appmsg 接口隔离）。此开关仅控制本文件内的旧 mp 后台 cookie 验证：
+# 保持 False 可跳过旧链路 cookie 验证，避免弹扫码窗口阻塞主流程。
+# 新链路的启用/禁用由 wechat_weread.py 中的 WECHAT_ENABLED 控制。
+WECHAT_ENABLED = False
+
+
+def _get_chrome_major_version():
+    """获取Chrome浏览器的主版本号
+    
+    Returns:
+        int or None: Chrome主版本号，获取失败返回None
+    """
+    import winreg
+    for hive, key_path in [
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Google\Chrome\BLBeacon"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Google\Chrome\BLBeacon"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Google\Chrome\BLBeacon"),
+    ]:
+        try:
+            key = winreg.OpenKey(hive, key_path)
+            version, _ = winreg.QueryValueEx(key, "version")
+            winreg.CloseKey(key)
+            return int(version.split(".")[0])
+        except Exception:
+            pass
+    return None
+
 
 def _get_chrome_service():
     """获取Chrome Service，优先使用本地chromedriver，避免每次下载
@@ -18,6 +47,10 @@ def _get_chrome_service():
     Returns:
         Service or None: Chrome服务对象，获取失败返回None
     """
+    chrome_major = _get_chrome_major_version()
+    if chrome_major:
+        print(f"检测到Chrome浏览器版本: {chrome_major}")
+    
     # 1. 尝试系统PATH中的chromedriver
     chromedriver_path = shutil.which("chromedriver")
     if chromedriver_path:
@@ -26,7 +59,7 @@ def _get_chrome_service():
         except Exception:
             pass
     
-    # 2. 搜索webdriver_manager缓存目录（.wdm）
+    # 2. 搜索webdriver_manager缓存目录（.wdm），优先匹配Chrome主版本号
     wdm_dir = os.path.join(os.path.expanduser("~"), ".wdm", "drivers", "chromedriver", "win64")
     if os.path.exists(wdm_dir):
         # 按版本号降序排列，优先使用最新版
@@ -35,6 +68,14 @@ def _get_chrome_service():
         except Exception:
             versions = []
         for ver in versions:
+            # 检查缓存版本与Chrome浏览器主版本是否匹配
+            if chrome_major:
+                try:
+                    cached_major = int(ver.split(".")[0])
+                    if cached_major != chrome_major:
+                        continue  # 跳过版本不匹配的缓存
+                except Exception:
+                    continue
             # 优先找子目录中的chromedriver.exe
             ver_dir = os.path.join(wdm_dir, ver)
             for root, dirs, files in os.walk(ver_dir):
@@ -439,9 +480,13 @@ def validate_all_cookies() -> dict:
     print(f"    {message}")
     
     print("\n[3/3] 验证微信cookie...")
-    is_valid, message = validate_wechat_cookie()
-    results["wechat"] = {"valid": is_valid, "message": message}
-    print(f"    {message}")
+    if not WECHAT_ENABLED:
+        results["wechat"] = {"valid": True, "message": "微信任务已禁用，跳过验证"}
+        print("    微信任务已禁用，跳过验证")
+    else:
+        is_valid, message = validate_wechat_cookie()
+        results["wechat"] = {"valid": is_valid, "message": message}
+        print(f"    {message}")
     
     print("\n" + "="*60)
     print("cookie验证完成")

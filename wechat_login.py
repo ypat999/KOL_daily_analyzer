@@ -96,6 +96,10 @@ def update_wechat_cookie():
 def check_cookie_validity(cookie, token):
     """
     检查cookie和token是否有效
+    
+    两步检测：
+    1. 检测 home 接口（登录态）
+    2. 检测 appmsg 接口（频率限制）—— 即使登录态有效，appmsg 也可能被限流
     """
     try:
         headers = {
@@ -103,19 +107,40 @@ def check_cookie_validity(cookie, token):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
         
-        # 测试请求
-        url = "https://mp.weixin.qq.com/cgi-bin/home"
+        # 第一步：检测登录态
+        home_url = "https://mp.weixin.qq.com/cgi-bin/home"
         params = {
             "t": "home/index",
             "lang": "zh_CN",
             "token": token
         }
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        
-        # 如果返回登录页面，说明cookie失效
+        response = requests.get(home_url, headers=headers, params=params, timeout=10)
         if "登录" in response.text or "verify_code" in response.text:
             return False
+        
+        # 第二步：检测 appmsg 接口是否被频率限制
+        appmsg_url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
+        appmsg_params = {
+            "token": token,
+            "lang": "zh_CN",
+            "f": "json",
+            "ajax": "1",
+            "action": "list_ex",
+            "begin": "0",
+            "count": "1",
+            "query": "",
+            "type": "9"
+        }
+        appmsg_resp = requests.get(appmsg_url, headers=headers, params=appmsg_params, timeout=10)
+        try:
+            resp_json = appmsg_resp.json()
+            err_msg = resp_json.get("base_resp", {}).get("err_msg", "")
+            if "freq control" in str(err_msg).lower():
+                print("    警告: 微信appmsg接口被频率限制（ret=200013），登录态有效但无法获取文章")
+                print("    该限流绑定账号，换token无效，需等待24小时恢复")
+                return False
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"检查cookie有效性时出错: {e}")

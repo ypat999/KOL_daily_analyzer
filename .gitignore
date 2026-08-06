@@ -219,9 +219,12 @@ bili_cookies.json
 content_list.json
 daily_content_*
 wechat_cookies*
+weread_auth.json
+weread_mpids.json
 deepseek_api_key*
 weibo_cookies.json
 positions.json
 push_config.json
 signal_kb.jsonl
 *.json
+!wechat_weread_accounts.json

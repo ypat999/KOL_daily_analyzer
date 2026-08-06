@@ -13,7 +13,8 @@ webdriver-manager>=3.8.6  # 用于自动下载和管理 ChromeDriver
 requests>=2.31.0  # 用于发送 HTTP 请求
 
 # 解决之前遇到的 blinker 模块缺失问题
-blinker==1.6.2  # 固定版本以确保_saferef模块存在
+blinker==1.7.0  # 固定版本以确保_saferef模块存在（1.8+ 已移除 _saferef，selenium-wire 无法导入）
+setuptools==80.9.0  # 固定版本以确保 pkg_resources 存在（setuptools 81+ 计划移除 pkg_resources，selenium-wire 依赖它）
 
 # BeautifulSoup库，用于解析HTML
 beautifulsoup4>=4.9.3  # 用于解析HTML和XML文档

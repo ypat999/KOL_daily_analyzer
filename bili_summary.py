@@ -20,6 +20,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from seleniumwire import webdriver  # 替换原生webdriver
+# 注意：selenium-wire 在 Python 3.12+ 环境导入依赖 blinker._saferef 和 pkg_resources。
+# 若报 No module named 'blinker._saferef' / 'pkg_resources'，执行:
+#   python -m pip install "blinker==1.7.0" "setuptools==80.9.0"
+# （与 requirements.txt 保持一致，勿升级这两个包）
 import subprocess
 import tempfile
 import os
@@ -33,6 +37,15 @@ from prediction_recorder import record_predictions_from_advice
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
+# 全局锁：faster-whisper 底层是 CTranslate2，多线程并发使用 GPU 会导致 native 层崩溃
+# （try/except 无法捕获，Python 进程静默退出）。所有 whisper 转写必须串行执行。
+WHISPER_LOCK = threading.Lock()
+
+# 全局锁：seleniumwire 每个实例都会启动独立的 mitmproxy 本地代理后端，
+# 多实例并发创建/运行会导致 chromedriver native 崩溃（Stacktrace: GetHandleVerifier）。
+# 所有 seleniumwire 浏览器创建必须串行执行。
+BROWSER_LOCK = threading.Lock()
+
 # 全局配置（集中管理）
 BILI_SPACE = "https://space.bilibili.com/"
 BILI_API = "https://api.bilibili.com/x/space/arc/search"
@@ -44,6 +57,7 @@ UP_MIDS = [
             "1421580803", #九先生笔记
             "515688213", #连板
             "471949556", #海螺复盘
+            "3546681834473583", #生炸瓜
           ]  # B站UP主用户ID
 COOKIE_PATH = "bili_cookies.json"  # 统一cookie路径配置
 # 工具函数：浏览器初始化（反爬配置集中管理）
@@ -64,13 +78,21 @@ def setup_browser():
     options.add_argument("--ignore-certificate-errors")
     options.add_argument("--ignore-ssl-errors")
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
+    # eager: driver.get 在 DOMContentLoaded 即返回，避免 B站视频页等全部资源加载
+    # 导致 seleniumwire 后端(localhost:port) 120s 超时 (Read timed out)
+    options.page_load_strategy = 'eager'
     # 初始化驱动
     # 使用selenium-wire的Chrome驱动
     service = _get_chrome_service()
     if service is None:
         raise RuntimeError("无法获取chromedriver，请检查Chrome浏览器是否安装")
-    
-    driver = webdriver.Chrome(service=service, options=options)
+
+    # 加锁：seleniumwire 多实例并发创建会 native 崩溃，浏览器创建必须串行。
+    # 注意：锁只包住创建过程；持有 driver 后的页面操作是独立会话，可并行。
+    with BROWSER_LOCK:
+        driver = webdriver.Chrome(service=service, options=options)
+    # 页面加载兜底超时，防止 driver.get 长时间挂起（元素等待由各处 WebDriverWait 单独控制）
+    driver.set_page_load_timeout(30)
     # 设置浏览器窗口尺寸为100x100
     driver.set_window_size(800, 600)
     return driver
@@ -383,7 +405,7 @@ def run_bili_task(use_api_for_videos: bool = False):
             all_videos = get_videos_by_api_threaded(UP_MIDS, max_workers=1)
         else:
             print(f"使用浏览器方式获取视频列表（第{attempt}次尝试）")
-            all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=2)
+            all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=1)
         
         print(f"总共获取到 {len(all_videos)} 个视频")
         
@@ -1184,41 +1206,43 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
             print("torch未安装，使用CPU进行语音识别")
         
         # 初始化模型（使用small模型，速度较快）
-        print(f"加载faster-whisper模型 (设备: {device}, 计算类型: {compute_type})...")
-        model = WhisperModel("small", device=device, compute_type=compute_type)
-        
-        print(f"开始语音识别: {audio_path}")
-        segments, info = model.transcribe(audio_path, beam_size=5, language="zh")
-        
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            for i, segment in enumerate(segments, 1):
-                # 转换时间格式
-                start_time = format_time(segment.start)
-                end_time = format_time(segment.end)
-                
-                f.write(f"{i}\n")
-                f.write(f"{start_time} --> {end_time}\n")
-                f.write(f"{segment.text}\n\n")
-        
-        print(f"字幕生成成功: {srt_path}")
-        
-        # 显式释放模型和GPU内存，避免长视频累积导致崩溃
-        try:
-            del model
-            del segments
-            del info
-            import gc
-            gc.collect()
+        # 加全局锁：faster-whisper/CT2 不支持多线程并发使用 GPU，会 native 崩溃
+        with WHISPER_LOCK:
+            print(f"加载faster-whisper模型 (设备: {device}, 计算类型: {compute_type})...")
+            model = WhisperModel("small", device=device, compute_type=compute_type)
+
+            print(f"开始语音识别: {audio_path}")
+            segments, info = model.transcribe(audio_path, beam_size=5, language="zh")
+
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                for i, segment in enumerate(segments, 1):
+                    # 转换时间格式
+                    start_time = format_time(segment.start)
+                    end_time = format_time(segment.end)
+
+                    f.write(f"{i}\n")
+                    f.write(f"{start_time} --> {end_time}\n")
+                    f.write(f"{segment.text}\n\n")
+
+            print(f"字幕生成成功: {srt_path}")
+
+            # 显式释放模型和GPU内存，避免长视频累积导致崩溃
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    print("已释放模型并清理GPU内存")
+                del model
+                del segments
+                del info
+                import gc
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        print("已释放模型并清理GPU内存")
+                except:
+                    pass
             except:
                 pass
-        except:
-            pass
-        
+
         return srt_path
         
     except Exception as e:

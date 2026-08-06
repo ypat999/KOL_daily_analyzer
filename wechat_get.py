@@ -135,16 +135,68 @@ data = {
 }
 
 
-def get_total_count(fakeid):
-    # 获取总数前添加随机延迟
-    time.sleep(random.uniform(2, 4))
+# 全局频率控制状态
+_last_request_time = 0.0  # 上次请求时间戳
+_freq_control_cooldown_until = 0.0  # freq control冷却结束时间戳
+_MIN_REQUEST_INTERVAL = 5.0  # 任意两次请求间最小间隔（秒）
+_FREQ_COOLDOWN_SECONDS = 90.0  # 遇到freq control后的全局冷却时间（秒）
+
+
+def _throttle_request():
+    """全局请求节流：确保请求间隔不小于_MIN_REQUEST_INTERVAL，若处于冷却期则等待"""
+    global _last_request_time, _freq_control_cooldown_until
+    now = time.time()
+    # 若处于freq control冷却期，等待至冷却结束
+    if now < _freq_control_cooldown_until:
+        wait = _freq_control_cooldown_until - now
+        print(f"  频率限制冷却中，等待{wait:.0f}秒...")
+        time.sleep(wait)
+    # 确保最小请求间隔
+    now = time.time()
+    elapsed = now - _last_request_time
+    if elapsed < _MIN_REQUEST_INTERVAL:
+        time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
+    _last_request_time = time.time()
+
+
+def _trigger_freq_cooldown():
+    """触发freq control全局冷却"""
+    global _freq_control_cooldown_until
+    _freq_control_cooldown_until = time.time() + _FREQ_COOLDOWN_SECONDS
+
+
+def _is_freq_control(content_json):
+    """检测响应是否为freq control频率限制"""
+    try:
+        err_msg = content_json.get('base_resp', {}).get('err_msg', '')
+        if 'freq control' in str(err_msg).lower():
+            return True
+    except Exception:
+        pass
+    return 'freq control' in str(content_json).lower()
+
+
+def get_total_count(fakeid, max_retries=3):
+    """获取公众号文章总数，遇到freq control自动重试并触发全局冷却"""
     data["fakeid"] = fakeid
-    content_json = requests.get(url, headers=headers, params=data).json()
-    if "app_msg_cnt" not in content_json:
-        print(f"获取{fakeid}总数失败")
-        raise Exception([content_json['base_resp']['err_msg']])
-    count = int(content_json["app_msg_cnt"])
-    return count
+    for attempt in range(max_retries):
+        _throttle_request()
+        content_json = requests.get(url, headers=headers, params=data).json()
+        if "app_msg_cnt" in content_json:
+            return int(content_json["app_msg_cnt"])
+        if _is_freq_control(content_json):
+            print(f"获取{fakeid}总数遇到频率限制，触发全局冷却并重试({attempt+1}/{max_retries})...")
+            _trigger_freq_cooldown()
+            continue
+        err_msg = ""
+        try:
+            err_msg = content_json.get('base_resp', {}).get('err_msg', '')
+        except Exception:
+            pass
+        print(f"获取{fakeid}总数失败: {content_json}")
+        raise Exception([err_msg or content_json])
+    print(f"获取{fakeid}总数失败: 多次重试后仍被频率限制")
+    raise Exception(["freq control: 重试耗尽"])
 
 
 def is_today_article(article):
@@ -196,51 +248,61 @@ def get_content_list(fakeid, account_name, per_page=5):
     print(f"开始获取公众号 '{account_name}' 的文章列表...")
     
     for i in tqdm(range(page), desc=f"获取{account_name}文章"):
-        # 请求前添加小的随机延迟
-        time.sleep(random.uniform(1, 2))
-        
         data["begin"] = i * per_page
         try:
-            content_json = requests.get(url, headers=headers, params=data).json()
-            if "app_msg_list" in content_json:
-                articles = content_json["app_msg_list"]
-                
-                # 检查本页是否有限定时间内发布的文章
-                today_articles = [article for article in articles if is_today_article(article)]
-                
-                if today_articles:
-                    # 有今日文章，逐篇获取完整内容并保存
-                    for article in today_articles:
-                        title = article.get('title', '无标题')
-                        article_url = article.get('link', '')
-                        
-                        # 检查文章是否已经保存过
-                        if is_article_saved(account_name, title, today):
-                            print(f"  文章已存在，跳过: {title}")
-                            continue
-                        
-                        # 获取文章完整内容
-                        print(f"  正在获取文章内容: {title}")
-                        content = get_article_content(article_url, title)
-                        
-                        if content:
-                            # 保存单篇文章
-                            save_single_article(account_name, article, content, today)
-                            # 添加到结果列表
-                            content_list.append(article)
-                        else:
-                            print(f"  获取文章内容失败: {title}")
+            # 翻页请求使用全局节流和freq control冷却重试
+            content_json = None
+            for retry in range(3):
+                _throttle_request()
+                content_json = requests.get(url, headers=headers, params=data).json()
+                if "app_msg_list" in content_json:
+                    break
+                if _is_freq_control(content_json):
+                    print(f"  第{i+1}页遇到频率限制，触发全局冷却并重试({retry+1}/3)...")
+                    _trigger_freq_cooldown()
+                    continue
+                break
+            if content_json is None or "app_msg_list" not in content_json:
+                print(f"  第{i+1}页未获取到文章列表，跳过")
+                continue
+            articles = content_json["app_msg_list"]
+            
+            # 检查本页是否有限定时间内发布的文章
+            today_articles = [article for article in articles if is_today_article(article)]
+            
+            if today_articles:
+                # 有今日文章，逐篇获取完整内容并保存
+                for article in today_articles:
+                    title = article.get('title', '无标题')
+                    article_url = article.get('link', '')
                     
-                    print(f"  第{i+1}页处理了 {len(today_articles)} 篇限定时间内文章")
-                else:
-                    # 本页没有今日文章，说明后面的文章都是更旧的，可以停止了
-                    if articles:  # 确保确实获取到了文章列表
-                        print(f"  第{i+1}页无限定时间内文章，停止获取")
-                        break
-                    else:
-                        # 如果没有获取到文章，继续下一页
+                    # 检查文章是否已经保存过
+                    if is_article_saved(account_name, title, today):
+                        print(f"  文章已存在，跳过: {title}")
                         continue
-                        
+                    
+                    # 获取文章完整内容
+                    print(f"  正在获取文章内容: {title}")
+                    content = get_article_content(article_url, title)
+                    
+                    if content:
+                        # 保存单篇文章
+                        save_single_article(account_name, article, content, today)
+                        # 添加到结果列表
+                        content_list.append(article)
+                    else:
+                        print(f"  获取文章内容失败: {title}")
+                
+                print(f"  第{i+1}页处理了 {len(today_articles)} 篇限定时间内文章")
+            else:
+                # 本页没有今日文章，说明后面的文章都是更旧的，可以停止了
+                if articles:  # 确保确实获取到了文章列表
+                    print(f"  第{i+1}页无限定时间内文章，停止获取")
+                    break
+                else:
+                    # 如果没有获取到文章，继续下一页
+                    continue
+                    
         except Exception as e:
             print(f"获取{account_name}第{i+1}页文章时出错: {e}")
             continue
@@ -252,8 +314,8 @@ def get_content_list(fakeid, account_name, per_page=5):
             print(f"  添加较长延迟: {delay:.1f}秒")
             time.sleep(delay)
         else:
-            # 正常延迟：4-8秒，更人性化的范围
-            delay = random.uniform(4, 8)
+            # 正常延迟：6-10秒（已由全局节流保底5秒，此处补充额外间隔）
+            delay = random.uniform(6, 10)
             time.sleep(delay)
     
     print(f"  {account_name} 总共获取并保存了 {len(content_list)} 篇限定时间内文章")
@@ -386,10 +448,18 @@ def save_daily_content(all_content):
 
 
 def get_all_accounts_daily_content():
-    """获取所有公众号的当日文章内容"""
-    all_content = {}
+    """获取所有公众号的当日文章内容
     
-    for fakeid, account_name in account_list.items():
+    遇到freq control失败的账号会在首轮结束后重试，避免单个账号阻塞整个流程
+    """
+    all_content = {}
+    # 随机化账号处理顺序，避免固定模式触发频率检测
+    accounts = list(account_list.items())
+    random.shuffle(accounts)
+    
+    failed_accounts = []  # 记录首轮失败的账号，用于后续重试
+    
+    for fakeid, account_name in accounts:
         print(f"\n{'='*60}")
         print(f"正在处理公众号: {account_name}")
         print(f"{'='*60}")
@@ -403,13 +473,17 @@ def get_all_accounts_daily_content():
             }
             print(f"{account_name} 获取到 {len(articles)} 篇今日文章")
         except Exception as e:
-            print(f"获取{account_name}文章时出错: {e}")
+            err_str = str(e)
+            print(f"获取{account_name}文章时出错: {err_str}")
             all_content[fakeid] = {
                 "account_name": account_name,
                 "articles": [],
-                "error": str(e),
+                "error": err_str,
                 "fetch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
+            # 记录失败账号用于重试（freq control或重试耗尽类错误）
+            if 'freq control' in err_str.lower() or '重试耗尽' in err_str:
+                failed_accounts.append((fakeid, account_name))
         
         # 公众号间添加更随机的延迟
         # 20%概率添加较长延迟（模拟切换账号时的操作间隔）
@@ -418,9 +492,39 @@ def get_all_accounts_daily_content():
             print(f"  公众号切换，添加较长延迟: {delay:.1f}秒")
             time.sleep(delay)
         else:
-            # 正常切换延迟：8-12秒
-            delay = random.uniform(8, 12)
+            # 正常切换延迟：10-15秒（由全局节流保底，此处延长账号切换间隔）
+            delay = random.uniform(10, 15)
             time.sleep(delay)
+    
+    # 重试首轮因freq control失败的账号
+    if failed_accounts:
+        print(f"\n{'='*60}")
+        print(f"首轮有{len(failed_accounts)}个账号因频率限制失败，等待60秒后重试...")
+        print(f"{'='*60}")
+        time.sleep(60)
+        # 重置全局冷却状态，给重试一个干净的环境
+        global _freq_control_cooldown_until
+        _freq_control_cooldown_until = 0.0
+        
+        for fakeid, account_name in failed_accounts:
+            print(f"\n重试公众号: {account_name}")
+            try:
+                articles = get_content_list(fakeid, account_name)
+                if articles:
+                    all_content[fakeid] = {
+                        "account_name": account_name,
+                        "articles": articles,
+                        "fetch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "retried": True
+                    }
+                    print(f"{account_name} 重试成功，获取到 {len(articles)} 篇今日文章")
+                else:
+                    print(f"{account_name} 重试后仍无文章")
+            except Exception as e:
+                print(f"{account_name} 重试仍失败: {e}")
+            
+            # 重试账号间也加延迟
+            time.sleep(random.uniform(12, 18))
     
     return all_content
 

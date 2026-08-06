@@ -6,8 +6,9 @@
 - `kol_analyzer.py`: 主程序入口，协调所有分析任务并合并投资建议
 - `cookie_validator.py`: 全平台统一登录与cookie验证模块
 - `bili_summary.py`: 提取B站UP主限定时间内视频并生成投资建议
-- `wechat_get.py`: 提取微信公众号限定时间内文章并生成投资建议
-- `wechat_login.py`: 微信公众号自动登录与cookie更新模块
+- `wechat_get.py`: 提取微信公众号限定时间内文章并生成投资建议（旧版，基于 mp 后台 appmsg 接口，已停用）
+- `wechat_weread.py`: 微信公众号文章分析（新版，基于微信读书桥接平台，普通微信号扫码即可，与 mp 后台 freq control 隔离）
+- `wechat_login.py`: 微信公众号自动登录与cookie更新模块（旧链路，已停用）
 - `weibo_get.py`: 提取微博用户限定时间内内容并生成投资建议
 - `momentum_analyzer.py`: 提取重点关注标的并进行动量因子分析
 - `position_manager.py`: 持仓管理模块，支持持仓动量分析和KOL推荐匹配
@@ -18,7 +19,10 @@
 - `date_utils.py`: 统一的日期处理工具
 - `requirements.txt`: 项目依赖包列表
 - `bili_cookies.json`: B站登录凭证配置文件
-- `wechat_cookies.json`: 微信公众号登录凭证配置文件（JSON格式，含cookie和token）
+- `wechat_cookies.json`: 微信公众号登录凭证配置文件（JSON格式，含cookie和token；旧链路使用）
+- `wechat_weread_accounts.json`: 微信读书桥接版的公众号配置（名称+示例文章链接；新链路使用）
+- `weread_auth.json`: 微信读书扫码登录凭据（新链路使用，自动生成，勿提交到仓库）
+- `weread_mpids.json`: 公众号 mp id 缓存（新链路使用，自动生成）
 - `weibo_cookies.json`: 微博登录凭证配置文件
 - `deepseek_api_key.txt`: DeepSeek API密钥配置文件
 - `positions.json`: 持仓数据配置文件
@@ -529,13 +533,16 @@ login_results = perform_unified_login()
 - `selenium-wire>=5.1.0`: 浏览器自动化（反检测版）
 - `selenium>=4.9.1`: Selenium基础依赖
 - `webdriver-manager>=3.8.6`: ChromeDriver自动管理
-- `blinker==1.6.2`: 信号处理库
+- `blinker==1.7.0`: 信号处理库（固定版本；1.8+ 移除了 `_saferef` 模块，selenium-wire 无法导入）
+- `setuptools==80.9.0`: 构建工具（固定版本；81+ 计划移除 `pkg_resources`，selenium-wire 依赖它）
 - `beautifulsoup4>=4.9.3`: HTML解析库
 - `openai`: OpenAI API客户端（用于DeepSeek）
 - `yfinance>=1.3.0`: Yahoo Finance数据获取（动量分析优先数据源）
 - `akshare>=1.12.0`: 中国股票市场数据获取（动量分析备用数据源）
 - `pandas>=2.0.0`: 数据处理
 - `numpy>=1.24.0`: 数值计算
+
+> **环境维护提醒**：`blinker` 和 `setuptools` 必须保持上述固定版本，否则 `selenium-wire`（Python 3.12+ 环境）会在导入 `kol_analyzer` 时崩溃，报错 `No module named 'blinker._saferef'` 或 `No module named 'pkg_resources'`。切勿随意升级这两个包。
 
 ## 计划功能
 - ~~抓取相关证券近期k线走势数据，加入大模型共同分析，生成针对个股的投资建议~~ ✅ 已完成
