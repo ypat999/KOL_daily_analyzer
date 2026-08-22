@@ -78,6 +78,12 @@ def setup_browser():
     options.add_argument("--ignore-certificate-errors")
     options.add_argument("--ignore-ssl-errors")
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
+    # 稳定性参数：避免 Chrome 启动时 GPU/沙箱/共享内存异常导致 session not created / chrome not reachable
+    options.add_argument("--disable-gpu")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--log-level=3")
     # eager: driver.get 在 DOMContentLoaded 即返回，避免 B站视频页等全部资源加载
     # 导致 seleniumwire 后端(localhost:port) 120s 超时 (Read timed out)
     options.page_load_strategy = 'eager'
@@ -241,7 +247,8 @@ def get_videos_by_selenium(driver, up_id: str):
         video_page_url = f'{BILI_SPACE}{up_id}/video'
         driver.get(video_page_url)
         print(f"访问URL：{video_page_url}")
-        driver.refresh()
+        # 注意：不执行 driver.refresh()，eager 策略下 refresh 会触发页面全量加载，
+        # 易导致 seleniumwire 后端(localhost:port) 超时/崩溃（空 Message + GetHandleVerifier）
         # 步骤4：加载视频列表（无需滚动，直接获取前3个）
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'div.upload-video-card.grid-mode'))
@@ -380,11 +387,12 @@ def get_subtitle_url(bvid: str, driver_video=None) -> str:
         if should_quit:
             driver_video.quit()
 
-def run_bili_task(use_api_for_videos: bool = False):
+def run_bili_task(use_api_for_videos: bool = True):
     """运行B站视频分析任务
-    
+
     Args:
-        use_api_for_videos: 是否使用API方式获取视频列表，默认为True
+        use_api_for_videos: 是否使用API方式获取视频列表，默认为True（API方式更稳定，
+            浏览器方式在部分Chrome版本上存在chromedriver崩溃问题）
     """
     pass
 
@@ -419,6 +427,17 @@ def run_bili_task(use_api_for_videos: bool = False):
                 time.sleep(5)
             else:
                 print(f"已尝试{max_retries}次，仍未获取到视频列表")
+
+    # 当前方式连续失败时，自动切换另一种方式兜底重试一轮
+    if not all_videos:
+        print("\n当前方式未获取到视频，自动切换另一种方式兜底重试...")
+        if use_api_for_videos:
+            print("使用浏览器方式获取视频列表（兜底重试）")
+            all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=1)
+        else:
+            print("使用API方式获取视频列表（兜底重试）")
+            all_videos = get_videos_by_api_threaded(UP_MIDS, max_workers=1)
+        print(f"兜底重试后总共获取到 {len(all_videos)} 个视频")
     
     if not all_videos:
         print("没有找到任何新视频，程序结束")
@@ -1428,5 +1447,5 @@ def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str = None):
         return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
 
 if __name__ == "__main__":
-    run_bili_task(use_api_for_videos=False)
+    run_bili_task()
     

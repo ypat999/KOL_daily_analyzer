@@ -14,6 +14,7 @@ from cookie_validator import perform_unified_login
 from backtest_analyzer import load_latest_backtest_stats, format_backtest_summary_for_prompt
 from market_breadth import run_market_breadth_analysis
 from fund_flow_analysis import run_fund_flow_analysis
+from sector_volume_monitor import run_sector_volume_analysis
 from momentum_analyzer import run_position_relative_strength, format_relative_strength_report
 from signal_knowledge_base import format_kb_summary_for_prompt, record_signals_from_analysis, update_signal_outcomes
 from advice_history import format_history_for_prompt, record_advice
@@ -203,6 +204,19 @@ class KOLAnalyzer:
                 print("已注入资金面分析到合并prompt")
         except Exception as e:
             print(f"资金面分析失败（不影响主流程）: {e}")
+
+        # 板块放量监控（底部放量=机会，顶部放量=风险）
+        try:
+            sector_report = run_sector_volume_analysis()
+            if sector_report:
+                combined_content += f"=== 板块放量监控（底部放量机会 / 顶部放量风险） ===\n{sector_report}\n\n"
+                print("已注入板块放量监控到合并prompt")
+                sector_report_path = os.path.join(self.archive_folder, f"板块放量监控报告_{self.current_date}.txt")
+                with open(sector_report_path, "w", encoding="utf-8") as f:
+                    f.write(sector_report)
+                print(f"板块放量监控报告已保存到: {sector_report_path}")
+        except Exception as e:
+            print(f"板块放量监控失败（不影响主流程）: {e}")
 
         # 持仓股相对所属行业强弱（RS = 个股涨幅 - 行业涨幅）
         try:
@@ -594,6 +608,15 @@ class KOLAnalyzer:
             try:
                 with open(match_path, "r", encoding="utf-8") as f:
                     context_parts.append(f"【持仓匹配分析】\n{f.read()}")
+            except Exception:
+                pass
+
+        # 板块放量监控（底部放量机会 / 顶部放量风险）
+        sector_path = os.path.join(self.archive_folder, f"板块放量监控报告_{self.current_date}.txt")
+        if os.path.exists(sector_path):
+            try:
+                with open(sector_path, "r", encoding="utf-8") as f:
+                    context_parts.append(f"【板块放量监控】\n{f.read()}")
             except Exception:
                 pass
 

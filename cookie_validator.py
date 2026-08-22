@@ -2,6 +2,7 @@ import os
 import json
 import time
 import shutil
+import subprocess
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -12,11 +13,10 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
 # ===== 微信任务总开关 =====
-# 注意：微信抓取已切换到微信读书桥接版（wechat_weread.py，普通微信号扫码，
-# 与 mp 后台 appmsg 接口隔离）。此开关仅控制本文件内的旧 mp 后台 cookie 验证：
-# 保持 False 可跳过旧链路 cookie 验证，避免弹扫码窗口阻塞主流程。
-# 新链路的启用/禁用由 wechat_weread.py 中的 WECHAT_ENABLED 控制。
-WECHAT_ENABLED = False
+# 微信抓取已切换到微信读书桥接版（wechat_weread.py，普通微信号扫码，
+# 与 mp 后台 appmsg 接口隔离）。开关统一由 wechat_weread.py 的 WECHAT_ENABLED 控制，
+# 本文件不再硬编码，避免与主流程开关不一致。
+from wechat_weread import WECHAT_ENABLED
 
 
 def _get_chrome_major_version():
@@ -41,12 +41,32 @@ def _get_chrome_major_version():
     return None
 
 
+def _cleanup_orphan_chrome():
+    """清理自动化残留的chrome进程（scoped_dir临时配置目录）
+
+    多次崩溃后 chromedriver 会残留 chrome 实例，堆积过多会干扰新会话创建
+    （session not created / chrome not reachable）。只清理 scoped_dir 临时
+    配置的实例，不影响用户正常浏览器。
+    """
+    try:
+        subprocess.run(
+            "powershell -NoProfile -Command "
+            "\"Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+            "Where-Object { $_.CommandLine -like '*scoped_dir*' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\"",
+            timeout=30, capture_output=True
+        )
+    except Exception:
+        pass
+
+
 def _get_chrome_service():
     """获取Chrome Service，优先使用本地chromedriver，避免每次下载
-    
+
     Returns:
         Service or None: Chrome服务对象，获取失败返回None
     """
+    _cleanup_orphan_chrome()
     chrome_major = _get_chrome_major_version()
     if chrome_major:
         print(f"检测到Chrome浏览器版本: {chrome_major}")
@@ -148,12 +168,28 @@ def validate_weibo_cookie() -> tuple:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument("--ignore-certificate-errors")
+        # 稳定性参数：避免 Chrome 启动时 GPU/沙箱/共享内存异常导致 session not created
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--log-level=3")
         
         service = _get_chrome_service()
         if service is None:
             return False, "无法获取chromedriver，跳过cookie验证"
         
-        driver = webdriver.Chrome(service=service, options=options)
+        # 会话创建偶发 chrome not reachable，重试一次
+        driver = None
+        for _attempt in range(2):
+            try:
+                driver = webdriver.Chrome(service=service, options=options)
+                break
+            except Exception as e:
+                print(f"  创建Chrome会话失败({_attempt+1}/2): {str(e)[:120]}")
+                time.sleep(3)
+        if driver is None:
+            return False, "创建Chrome会话失败（chrome not reachable）"
         driver.set_page_load_timeout(15)
         driver.set_script_timeout(10)
         
@@ -265,53 +301,33 @@ def validate_bili_cookie() -> tuple:
     except Exception as e:
         return False, f"验证B站cookie时出错: {str(e)}"
 
-def validate_wechat_cookie() -> tuple:
-    """验证微信cookie是否有效
-    
+def validate_weread_auth() -> tuple:
+    """验证微信读书登录凭据（微信任务新链路，替代旧 mp 后台 cookie）
+
+    实际请求平台校验 token 有效性，而非仅检查文件存在：
+    失效时返回 False，触发 perform_unified_login 自动重新扫码登录。
+
     Returns:
         tuple: (is_valid: bool, message: str)
     """
-    if not check_cookie_exists("wechat"):
-        return False, "微信cookie文件不存在"
-    
     try:
-        with open(COOKIE_FILES["wechat"], 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        cookie = data.get("cookie", "")
-        token = data.get("token", "")
-        
-        if not cookie or not token:
-            return False, "微信cookie或token为空"
-        
-        test_url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
-        params = {
-            "token": token,
-            "lang": "zh_CN",
-            "f": "json",
-            "ajax": "1",
-            "action": "list_ex",
-            "begin": "0",
-            "count": "5",
-            "type": "9",
-        }
-        
-        headers = {
-            "Cookie": cookie,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        
-        response = requests.get(test_url, headers=headers, params=params, timeout=10)
-        result = response.json()
-        
-        if result.get('base_resp', {}).get('ret') == 0:
-            return True, "微信cookie有效"
-        else:
-            err_msg = result.get('base_resp', {}).get('err_msg', '未知错误')
-            return False, f"微信cookie已失效（{err_msg}）"
-            
+        from wechat_weread import load_auth, verify_auth, AUTH_FILE
+    except ImportError:
+        return False, "未找到wechat_weread模块"
+    if not os.path.exists(AUTH_FILE):
+        return False, "微信读书凭据文件不存在，需运行 wechat_weread 扫码登录"
+    try:
+        auth = load_auth()
     except Exception as e:
-        return False, f"验证微信cookie时出错: {str(e)}"
+        return False, f"读取微信读书凭据出错: {e}"
+    if not auth or not auth.get("vid") or not auth.get("token"):
+        return False, "微信读书凭据无效（缺少 vid/token）"
+    status = verify_auth(auth)
+    if status is False:
+        return False, "微信读书凭据已失效（token过期），需重新扫码登录"
+    if status is None:
+        return True, "微信读书凭据存在（网络异常，有效性待验证）"
+    return True, "微信读书凭据有效"
 
 def manual_login_weibo() -> bool:
     """手动登录微博并保存cookie
@@ -429,32 +445,26 @@ def manual_login_bili() -> bool:
         print(f"✗ B站登录出错: {str(e)}")
         return False
 
-def manual_login_wechat() -> bool:
-    """手动登录微信并保存cookie
-    
+def manual_login_weread() -> bool:
+    """微信读书扫码登录（微信任务新链路，替代旧 mp 后台登录）
+
     Returns:
         bool: 登录是否成功
     """
     try:
-        print("\n>>> 启动微信手动登录流程...")
-        
-        try:
-            from wechat_login import update_wechat_cookie
-            new_cookie, new_token = update_wechat_cookie()
-            
-            if new_cookie and new_token:
-                print("✓ 微信登录成功，cookie已保存")
-                return True
-            else:
-                print("✗ 微信登录失败")
-                return False
-        except ImportError:
-            print("✗ 未找到wechat_login模块，无法自动登录")
-            print("请手动运行 wechat_login.py 或手动更新 wechat_cookies.json 文件")
-            return False
-        
+        from wechat_weread import login_weread
+    except ImportError:
+        print("✗ 未找到wechat_weread模块，无法自动登录")
+        return False
+    try:
+        auth = login_weread()
+        if auth and auth.get("vid") and auth.get("token"):
+            print("✓ 微信读书登录成功，凭据已保存")
+            return True
+        print("✗ 微信读书登录失败")
+        return False
     except Exception as e:
-        print(f"✗ 微信登录出错: {str(e)}")
+        print(f"✗ 微信读书登录出错: {str(e)}")
         return False
 
 def validate_all_cookies() -> dict:
@@ -484,7 +494,7 @@ def validate_all_cookies() -> dict:
         results["wechat"] = {"valid": True, "message": "微信任务已禁用，跳过验证"}
         print("    微信任务已禁用，跳过验证")
     else:
-        is_valid, message = validate_wechat_cookie()
+        is_valid, message = validate_weread_auth()
         results["wechat"] = {"valid": is_valid, "message": message}
         print(f"    {message}")
     
@@ -531,7 +541,7 @@ def perform_unified_login() -> dict:
                 success = manual_login_bili()
                 login_results[platform] = success
             elif platform == "wechat":
-                success = manual_login_wechat()
+                success = manual_login_weread()
                 login_results[platform] = success
     else:
         print("\n✓ 所有平台cookie均有效，无需重新登录")

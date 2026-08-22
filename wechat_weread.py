@@ -170,10 +170,26 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=3):
                 print(f"  文章列表解析异常: {e}")
                 return []
         else:
+            if r is not None and r.status_code == 401:
+                print("  微信读书凭据已失效（HTTP 401），需重新扫码登录")
+                return []
             print(f"  拉取文章列表失败: HTTP {r.status_code if r else 'None'}")
             if attempt < max_retries - 1:
                 time.sleep(8 * (attempt + 1))
     return []
+
+
+def verify_auth(auth):
+    """校验微信读书登录凭据是否有效
+
+    Returns:
+        bool: True 有效 / False token 失效 / None 网络异常无法判断
+    """
+    headers = {"xid": str(auth["vid"]), "Authorization": f"Bearer {auth['token']}"}
+    r = _platform_request("GET", "/api/v2/platform/mps/0/articles?page=1", headers=headers, timeout=15)
+    if r is None:
+        return None
+    return r.status_code != 401
 
 
 def is_today_article_ts(ts):
@@ -351,6 +367,16 @@ def run_wechat_task(generate_advice=True):
         if not auth:
             print("登录失败，微信任务中止")
             return None
+    else:
+        auth_status = verify_auth(auth)
+        if auth_status is False:
+            print("微信读书凭据已失效（token过期），自动重新扫码登录...")
+            auth = login_weread()
+            if not auth:
+                print("重新登录失败，微信任务中止")
+                return None
+        elif auth_status is None:
+            print("微信读书凭据有效性校验失败（网络异常），按有效继续执行...")
 
     accounts = load_config()
     if not accounts:
