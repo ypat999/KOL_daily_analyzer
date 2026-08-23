@@ -86,22 +86,27 @@ def login_weread():
         return None
 
     data_url = scan_url or f"{PLATFORM}/login?uuid={uid}"
+    qr_file = None
     try:
         import qrcode
         qr = qrcode.QRCode(border=2, box_size=8)
         qr.add_data(data_url)
         qr.make(fit=True)
         qr.make_image(fill_color="black", back_color="white").save("weread_qr.png")
+        qr_file = "weread_qr.png"
         print(f"二维码已保存 weread_qr.png，请用手机微信扫码登录微信读书")
-        if os.name == "nt":
-            os.startfile("weread_qr.png")
-    except Exception as e:
-        # qrcode/Pillow 缺失（如 freethreaded 版 Python 无对应 wheel）时降级：
-        # 直接在浏览器打开扫码页，同样可用手机微信扫一扫
-        print(f"  生成二维码图片失败({str(e)[:60]})，改为在浏览器打开扫码页")
-        print(f"  请用手机微信扫一扫页面上的二维码: {data_url}")
-        if os.name == "nt":
-            os.startfile(data_url)
+    except Exception as e1:
+        # qrcode/Pillow 缺失（如 freethreaded 版 Python 无对应 wheel）时，
+        # 用纯 Python 的 segno 生成二维码图片（微信扫码页在桌面浏览器无法直接渲染）
+        try:
+            import segno
+            segno.make(data_url, error='L').save("weread_qr.png", scale=8, border=2)
+            qr_file = "weread_qr.png"
+            print(f"已用segno生成二维码 weread_qr.png（{str(e1)[:30]}），请用手机微信扫码登录微信读书")
+        except Exception as e2:
+            print(f"生成二维码图片失败({str(e2)[:60]})，请用手机微信扫一扫: {data_url}")
+    if qr_file and os.name == "nt":
+        os.startfile(qr_file)
 
     for i in range(100):
         time.sleep(3)

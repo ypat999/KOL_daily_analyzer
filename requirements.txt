@@ -34,6 +34,10 @@ numpy>=1.24.0  # 数值计算
 # OpenAI API客户端（用于DeepSeek）
 openai>=1.0.0  # OpenAI API客户端
 
+# 微信读书扫码登录二维码生成（纯Python，兼容无qrcode/Pillow环境）
+segno>=1.6.0  # 纯Python二维码生成
+pypng>=0.20220715.0  # segno输出PNG依赖
+
 # 其他依赖
 torch==2.6.0 --no-index -f https://mirrors.aliyun.com/pytorch-wheels/cu124/  # faster-whisper依赖
 ctranslate2>=3.20.0  # faster-whisper依赖python
