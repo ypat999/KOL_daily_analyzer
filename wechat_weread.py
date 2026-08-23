@@ -87,21 +87,21 @@ def login_weread():
 
     data_url = scan_url or f"{PLATFORM}/login?uuid={uid}"
     try:
-        import qrcode, os as _os
+        import qrcode
         qr = qrcode.QRCode(border=2, box_size=8)
         qr.add_data(data_url)
         qr.make(fit=True)
         qr.make_image(fill_color="black", back_color="white").save("weread_qr.png")
         print(f"二维码已保存 weread_qr.png，请用手机微信扫码登录微信读书")
-        if _os.name == "nt":
-            _os.startfile("weread_qr.png")
+        if os.name == "nt":
+            os.startfile("weread_qr.png")
     except Exception as e:
         # qrcode/Pillow 缺失（如 freethreaded 版 Python 无对应 wheel）时降级：
         # 直接在浏览器打开扫码页，同样可用手机微信扫一扫
         print(f"  生成二维码图片失败({str(e)[:60]})，改为在浏览器打开扫码页")
         print(f"  请用手机微信扫一扫页面上的二维码: {data_url}")
-        if _os.name == "nt":
-            _os.startfile(data_url)
+        if os.name == "nt":
+            os.startfile(data_url)
 
     for i in range(100):
         time.sleep(3)
