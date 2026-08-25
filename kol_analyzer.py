@@ -351,6 +351,17 @@ class KOLAnalyzer:
             
             print(f"综合投资建议已保存到: {merged_advice_path}")
             
+            # 生成盯盘参数文件（供 market_monitor.py 读取，盘中条件触发时弹窗提醒）
+            try:
+                from generate_monitor_params import generate_monitor_params
+                monitor_file = generate_monitor_params(
+                    merged_advice, self.current_date, self.archive_folder, use_llm=False
+                )
+                if monitor_file:
+                    print(f"盯盘参数已生成: {monitor_file}")
+            except Exception as e:
+                print(f"生成盯盘参数失败（不影响主流程）: {e}")
+            
             # 提取并保存综合投资建议的预测观点
             record_predictions_from_advice(merged_advice, "merged", "综合分析", self.current_date, self.archive_folder)
             
@@ -534,9 +545,22 @@ class KOLAnalyzer:
         # 推送综合投资建议到微信（PushPlus）
         try:
             if merged_advice:
+                push_content = merged_advice
+                # 附加盯盘参数（供手机端查看今日条件，后台盯盘程序按此执行弹窗）
+                monitor_path = os.path.join(self.archive_folder, f"monitor_params_{self.current_date}.json")
+                if not os.path.exists(monitor_path):
+                    monitor_path = f"monitor_params_{self.current_date}.json"
+                if os.path.exists(monitor_path):
+                    try:
+                        from generate_monitor_params import format_params_markdown
+                        with open(monitor_path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                        push_content = merged_advice.rstrip() + "\n" + format_params_markdown(payload)
+                    except Exception as e:
+                        print(f"附加盯盘参数失败（不影响推送）: {e}")
                 ok, msg = push_to_wechat(
                     f"KOL分析报告 {self.current_date}",
-                    merged_advice
+                    push_content
                 )
                 if ok:
                     print(f"✓ 综合投资建议已推送到微信: {msg}")
