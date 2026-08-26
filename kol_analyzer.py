@@ -182,6 +182,8 @@ class KOLAnalyzer:
             if market_breadth_report:
                 combined_content += f"=== 市场宽度分析 ===\n{market_breadth_report}\n\n"
                 print("已注入市场宽度分析到合并prompt")
+                # 缓存供 build_chat_context 复用，避免推送后重复计算
+                self._market_breadth_report = market_breadth_report
         except Exception as e:
             print(f"市场宽度分析失败（不影响主流程）: {e}")
         
@@ -623,13 +625,15 @@ class KOLAnalyzer:
             except Exception:
                 pass
         
-        # 市场宽度分析
-        try:
-            market_report = run_market_breadth_analysis()
-            if market_report:
-                context_parts.append(f"【市场宽度分析】\n{market_report}")
-        except Exception:
-            pass
+        # 市场宽度分析（复用合并阶段缓存，避免重复计算）
+        market_report = getattr(self, "_market_breadth_report", None)
+        if not market_report:
+            try:
+                market_report = run_market_breadth_analysis()
+            except Exception:
+                market_report = None
+        if market_report:
+            context_parts.append(f"【市场宽度分析】\n{market_report}")
         
         # 持仓组合风险
         try:
