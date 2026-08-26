@@ -30,7 +30,7 @@
 盯盘条件类型（condition.type）速查（完整定义见下方 CONDITION_TYPES）：
     价格类:  price_in_range  price_above  price_below
              cross_above    cross_below
-    幅度类:  pct_change_ge  pct_change_le  open_pct_ge  open_pct_le
+    幅度类:  pct_change_ge  pct_change_le  pct_change_lt  open_pct_ge  open_pct_le
     成交类:  amount_ge  amount_le  amount_ratio_ge  amount_ratio_le
              volume_ratio_ge  volume_ratio_le  half_day_amount_le
              consecutive_amount_le
@@ -45,8 +45,10 @@
 import argparse
 import json
 import os
+import queue
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -95,6 +97,7 @@ CONDITION_TYPES = {
     # 幅度类（相对昨收）
     "pct_change_ge": {"params": ["pct"], "need": "quote"},
     "pct_change_le": {"params": ["pct"], "need": "quote"},
+    "pct_change_lt": {"params": ["pct"], "need": "quote"},
     "open_pct_ge": {"params": ["pct"], "need": "quote"},
     "open_pct_le": {"params": ["pct"], "need": "quote"},
     # 成交类
@@ -618,7 +621,7 @@ def evaluate_condition(cond, alert, ctx):
             return False, f"未下穿 {v}（前值 {prev}，现价 {p}）"
 
     # ---- 幅度类 ----
-    if ctype in ("pct_change_ge", "pct_change_le"):
+    if ctype in ("pct_change_ge", "pct_change_le", "pct_change_lt"):
         p, pc = P(), _f(q["prev_close"] if q else None)
         thr = _f(cond.get("pct"))
         if p is None or pc is None or pc <= 0 or thr is None:
@@ -626,7 +629,9 @@ def evaluate_condition(cond, alert, ctx):
         chg = (p / pc - 1) * 100
         if ctype == "pct_change_ge":
             return (chg >= thr, f"涨幅 {chg:+.2f}% ≥ {thr}%")
-        return (chg <= -thr, f"跌幅 {chg:+.2f}% ≥ {thr}%")
+        if ctype == "pct_change_le":
+            return (chg <= -thr, f"跌幅 {chg:+.2f}% ≥ {thr}%")
+        return (chg < thr, f"涨幅 {chg:+.2f}% < {thr}%")
 
     if ctype in ("open_pct_ge", "open_pct_le"):
         op, pc = q["open"] if q else None, q["prev_close"] if q else None
@@ -831,30 +836,98 @@ def evaluate_alert(alert, ctx):
 # ============================================================
 
 class PopupManager:
+    """弹窗管理器。
+
+    tk 模式：tkinter 运行在独立线程（自带 mainloop），通知经线程安全队列
+    交给 tk 线程，由 after() 定时排空（200ms）。主线程完全不阻塞，弹窗
+    可正常拖动/关闭，多个弹窗也不影响轮询。
+    其余模式（toast/plyer/print）保持由主线程 pump() 同步处理。
+    """
+    _SHUTDOWN = object()
+
     def __init__(self, method="tk", beep=True, sticky=0):
         self.method = method
         self.beep = beep
         self.sticky = sticky
         self._root = None
-        self._queue = []
+        self._queue = queue.Queue()
         self._toast = None
+        self._thread = None
         if method in ("auto", "tk"):
-            self._init_tk()
-            if self._root is None and method == "auto":
+            if not self._start_tk_thread() and method == "auto":
                 self._try_toast()
         elif method == "toast":
             self._try_toast()
 
-    def _init_tk(self):
+    def _start_tk_thread(self):
         try:
-            import tkinter as tk
-            self._root = tk.Tk()
-            self._root.withdraw()
-            self.method = "tk"
+            import tkinter  # noqa: F401  提前验证可用性
         except Exception as e:
             print(f"[弹窗] tkinter 不可用: {e}")
-            self._root = None
             self.method = "print"
+            return False
+        self.method = "tk"
+        self._tk_ready = threading.Event()
+        self._tk_error = None
+        self._thread = threading.Thread(target=self._tk_main, daemon=True, name="popup-tk")
+        self._thread.start()
+        if not self._tk_ready.wait(timeout=3):
+            print("[弹窗] tk 线程启动超时，回退为 print")
+            self.method = "print"
+            return False
+        if self._tk_error is not None:
+            print(f"[弹窗] tk 初始化失败: {self._tk_error}，回退为 print")
+            self.method = "print"
+            return False
+        return True
+
+    def _tk_main(self):
+        try:
+            import tkinter as tk
+        except Exception as e:
+            self._tk_error = e
+            self._tk_ready.set()
+            return
+        try:
+            self._root = tk.Tk()
+            self._root.withdraw()
+            self._root.after(200, self._drain)
+            self._tk_ready.set()
+            self._root.mainloop()
+        except Exception as e:
+            self._tk_error = e
+            self._tk_ready.set()
+        finally:
+            self._root = None
+
+    def _drain(self):
+        """tk 线程内：排空通知队列，创建弹窗"""
+        root = self._root
+        if root is None:
+            return
+        try:
+            while True:
+                item = self._queue.get_nowait()
+                if item is PopupManager._SHUTDOWN:
+                    try:
+                        root.destroy()
+                    except Exception:
+                        pass
+                    return
+                title, msg = item
+                if self.beep:
+                    try:
+                        import winsound
+                        winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                    except Exception:
+                        pass
+                self._show_tk(root, title, msg)
+        except queue.Empty:
+            pass
+        try:
+            root.after(200, self._drain)
+        except Exception:
+            pass
 
     def _try_toast(self):
         try:
@@ -869,13 +942,19 @@ class PopupManager:
                 self.method = "print"
 
     def notify(self, title, message):
-        self._queue.append((title, message))
+        self._queue.put((title, message))
 
     def pump(self):
-        """主线程调用：处理队列中的弹窗"""
-        if not self._queue:
+        """主线程调用：tk 模式由独立线程处理（本函数不阻塞）；
+        其余模式在此同步排空队列。"""
+        if self._thread is not None:
             return
-        items, self._queue = self._queue, []
+        items = []
+        while True:
+            try:
+                items.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
         for title, msg in items:
             if self.beep:
                 try:
@@ -883,9 +962,7 @@ class PopupManager:
                     winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
                 except Exception:
                     pass
-            if self.method == "tk" and self._root is not None:
-                self._show_tk(title, msg)
-            elif self.method == "toast" and self._toast is not None:
+            if self.method == "toast" and self._toast is not None:
                 try:
                     self._toast.show_toast(title, msg, duration=10, threaded=True)
                 except Exception as e:
@@ -899,10 +976,10 @@ class PopupManager:
             else:
                 print(f"\n*** 条件触发提醒 ***\n{title}\n{msg}\n")
 
-    def _show_tk(self, title, msg):
+    def _show_tk(self, root, title, msg):
         try:
             import tkinter as tk
-            top = tk.Toplevel(self._root)
+            top = tk.Toplevel(root)
             top.title(title)
             top.attributes("-topmost", True)
             top.geometry("+100+100")
@@ -912,12 +989,17 @@ class PopupManager:
                       command=top.destroy).pack(pady=(0, 12))
             top.lift()
             top.focus_force()
-            self._root.update()
         except Exception as e:
             print(f"[弹窗] tk 窗口失败: {e}")
 
     def close(self):
-        if self._root is not None:
+        if self._thread is not None:
+            try:
+                self._queue.put(PopupManager._SHUTDOWN)
+                self._thread.join(timeout=1)
+            except Exception:
+                pass
+        elif self._root is not None:
             try:
                 self._root.destroy()
             except Exception:

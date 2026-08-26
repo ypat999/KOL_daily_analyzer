@@ -49,6 +49,8 @@ SYMBOL_TABLE = {
     "智飞生物": ("300122", "stock"), "百克生物": ("688276", "stock"),
     "中芯国际": ("688981", "stock"), "海光信息": ("688041", "stock"),
     "黄金ETF": ("518880", "etf"),
+    # 国内金价/黄金持仓：无A股代码，仅识别名称用于人工提醒，code 留空
+    "黄金": ("", "market"),
     # 08-24 建议新增
     "招商银行": ("600036", "stock"), "紫金矿业": ("601899", "stock"),
     "融捷股份": ("002192", "stock"), "赣锋锂业": ("002460", "stock"),
@@ -92,10 +94,22 @@ SHORT_ALIAS = {
 
 
 def classify_action(action_text):
-    """根据操作动作关键词判断条件类型（价格类）"""
+    """根据操作动作+监控原因判断条件类型（价格类）。
+
+    方向优先看"阻力/支撑"语义（监控原因列），再回退到动作关键词，
+    避免"触及即大幅减仓"（阻力在上方）被误判为跌破、"关注缺口支撑"被误判为上穿。
+    """
     a = action_text or ""
+    cross = any(k in a for k in ("放量", "有效"))
+    # 阻力/上方语义：价格上行触及（20日高点、整数阻力等）
+    if any(k in a for k in ("阻力", "高点", "高位")):
+        return "cross_above" if cross else "price_above"
+    # 支撑/下方语义：价格下行触及（缺口支撑、波段低点、下沿等）
+    if any(k in a for k in ("支撑", "下沿", "低点", "低位")):
+        return "cross_below" if cross else "price_below"
+    # 动作关键词兜底（保持原逻辑）
     if any(k in a for k in ("跌破", "破位", "下穿", "清仓", "止损", "防御", "减仓", "回避", "转弱")):
-        return "cross_below" if any(k in a for k in ("放量", "有效")) else "price_below"
+        return "cross_below" if cross else "price_below"
     if any(k in a for k in ("突破", "站上", "上穿", "止盈", "加仓", "转强", "攻上")):
         return "cross_above" if any(k in a for k in ("放量",)) else "price_above"
     if any(k in a for k in ("低吸", "建仓", "回踩", "反抽")):
@@ -172,15 +186,29 @@ def parse_price_table(text):
 # 规则解析二：IF-THEN 条件句
 # ============================================================
 
+def _parse_or(phrase, cond_text):
+    """把含 '或/OR' 的短语解析为 any_of（无 '或' 则退回单条件）"""
+    ors = [x.strip() for x in re.split(r"\s*\bOR\b\s*|\s*或\s*", phrase)]
+    ors = [x for x in ors if x]
+    if len(ors) <= 1:
+        return _parse_single_cond(phrase, cond_text)
+    conds = [c for c in (_parse_single_cond(x, cond_text) for x in ors) if c]
+    if not conds:
+        return None
+    if len(conds) == 1:
+        return conds[0]
+    return {"type": "any_of", "conditions": conds}
+
+
 def parse_cond_phrase(phrase, cond_text):
     """把一条条件短语解析为 condition dict（可含组合）"""
     subs = []
-    # 切成 AND 子条件
+    # 切成 AND 子条件（AND 优先级高于 或）
     parts = [p.strip() for p in re.split(r"\s*\bAND\b\s*|\s*且\s*|\s*并且\s*", phrase)]
     for p in parts:
         if not p:
             continue
-        cond = _parse_single_cond(p, cond_text)
+        cond = _parse_or(p, cond_text)
         if cond:
             subs.append(cond)
     if not subs:
@@ -192,6 +220,35 @@ def parse_cond_phrase(phrase, cond_text):
 
 def _parse_single_cond(p, cond_text):
     """解析单条条件子句"""
+    # 否定/禁止语义：无法量化为正向触发，跳过（避免"不跌破846"被误判为"跌破846"）
+    if re.search(r"不(跌破|破|回落|收复|回补|收回)", p):
+        return None
+
+    # 涨幅/跌幅（"收盘涨幅<0.5%"、"跌幅>3%"）
+    m = re.search(r"(涨幅|跌幅)\s*([<>≥≤])\s*([\d.]+)\s*%?", p)
+    if m:
+        pct = float(m.group(3))
+        if m.group(1) == "涨幅":
+            return {"type": "pct_change_lt" if m.group(2) in "<≤" else "pct_change_ge", "pct": pct}
+        return {"type": "pct_change_le" if m.group(2) in ">≥" else "pct_change_ge", "pct": pct}
+
+    # 成交额相对昨日/前一日同期比例（"成交额≥前一日同期的110%"）
+    m = re.search(r"成交额\s*([<≤>≥])\s*[前昨]一日?\s*同期?\s*的?\s*([\d.]+)\s*%", p)
+    if m:
+        ratio = float(m.group(2)) / 100
+        return {"type": "amount_ratio_le" if m.group(1) in "<≤" else "amount_ratio_ge",
+                "ratio": ratio, "kind": "market"}
+
+    # 成交额环比放大/萎缩 X%（"成交额环比放大>30%" → 相对昨日 130%）
+    m = re.search(r"成交额[^\d]*?(放大|增加|增长|上升|扩大)\s*[>≥]?\s*([\d.]+)\s*%", p)
+    if m:
+        ratio = 1 + float(m.group(2)) / 100
+        return {"type": "amount_ratio_ge", "ratio": ratio, "kind": "market"}
+    m = re.search(r"成交额[^\d]*?(萎缩|减少|下降|缩小|回落)\s*[<≤]?\s*([\d.]+)\s*%", p)
+    if m:
+        ratio = 1 - float(m.group(2)) / 100
+        return {"type": "amount_ratio_le", "ratio": ratio, "kind": "market"}
+
     # 连续N日成交额
     m = re.search(r"连续\s*(\d+)\s*日.*?成交额.*?[<≤]\s*([\d.]+)\s*万亿?", p)
     if m:
@@ -237,8 +294,8 @@ def _parse_single_cond(p, cond_text):
     if m:
         return {"type": "volume_ratio_le" if m.group(1) in "<≤" else "volume_ratio_ge", "ratio": float(m.group(2))}
 
-    # 高开/低开
-    m = re.search(r"(高开|低开)\s*(?:超过|大于|高于|>|≥)?\s*([\d.]+)\s*%?", p)
+    # 高开/低开（容忍中间出现"幅度"等词）
+    m = re.search(r"(高开|低开)[^\d]*?([\d.]+)\s*%?", p)
     if m:
         pct = float(m.group(2))
         return {"type": "open_pct_ge" if m.group(1) == "高开" else "open_pct_le", "pct": pct}
@@ -247,6 +304,13 @@ def _parse_single_cond(p, cond_text):
     m = re.search(r"回踩\s*([\d.]+)\s*[-—~至]\s*([\d.]+)", p)
     if m:
         return {"type": "price_in_range", "min": float(m.group(1)), "max": float(m.group(2))}
+
+    # 均线（"跌破5日均线"等，须在单点价格规则之前，避免"5"被当作价格）
+    m = re.search(r"(跌破|站上|上穿|下穿|突破)\s*(\d+)\s*日\s*(均线|线|MA)?", p)
+    if m:
+        ma = int(m.group(2))
+        kw = m.group(1)
+        return {"type": "price_below_ma" if kw in ("跌破", "下穿") else "price_above_ma", "ma": ma}
 
     # 回踩/跌破/站上 单点
     code, kind, _ = find_target(p)
@@ -280,12 +344,18 @@ def _parse_single_cond(p, cond_text):
 
 
 def parse_if_then(text):
-    """解析 'IF ... THEN ...' 条件句"""
+    """解析 'IF ... THEN ...' 条件句（支持 IF/AND/THEN 跨行）"""
     alerts = []
-    for m in re.finditer(r"(?:IF|如果)\s+(.+?)\s+THEN\s+(.+)", text):
+    for m in re.finditer(r"(?:IF|如果)\s+(.+?)\s+THEN\s+([^\n]+)", text, re.S):
         cond_text, then_text = m.group(1).strip(), m.group(2).strip()
         then_text = re.split(r"[。；;]", then_text)[0].strip()
+        # 外生事件/无法量化前置：跳过（英伟达财报结果需人工判断）
+        if re.search(r"英伟达|财报|盘后", cond_text):
+            continue
         code, kind, name = find_target(cond_text)
+        # 板块/概念级条件：无具体标的代码，规则解析无法盯，跳过
+        if not code and re.search(r"板块|概念|行业", cond_text):
+            continue
         if not code:
             code, kind, name = find_target(then_text)
         cond = parse_cond_phrase(cond_text, cond_text)
@@ -418,6 +488,7 @@ def condition_to_text(cond):
         "cross_below": f"{price_tag}下穿 {_fmt(v)}",
         "pct_change_ge": f"现价涨幅≥{_fmt(cond.get('pct'))}%",
         "pct_change_le": f"现价跌幅≥{_fmt(cond.get('pct'))}%",
+        "pct_change_lt": f"现价涨幅<{_fmt(cond.get('pct'))}%",
         "open_pct_ge": f"开盘高开≥{_fmt(cond.get('pct'))}%",
         "open_pct_le": f"开盘低开≥{_fmt(cond.get('pct'))}%",
         "amount_ge": f"成交额≥{_amount_text(cond.get('amount'))}",
@@ -531,9 +602,9 @@ def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=Fals
         meta.update(meta_extra)
 
     # 从建议文本提取策略概要/日期（容错）
-    m = re.search(r"(条件GO|NO-GO|GO|No-Go|看多|看空|中性|防守|进攻)[^。\n]*", advice_text)
+    m = re.search(r"(条件\s*GO|NO-GO|No-Go|GO|看多|看空|中性|防守|进攻)[^。\n]*", advice_text)
     if m and not meta.get("strategy"):
-        meta["strategy"] = m.group(0).strip()[:60]
+        meta["strategy"] = m.group(0).strip().rstrip("*").strip()[:60]
 
     payload = {"_说明": "由 generate_monitor_params.py 生成", "meta": meta, "alerts": alerts}
 
