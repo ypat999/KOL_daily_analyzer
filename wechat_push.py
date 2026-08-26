@@ -32,13 +32,15 @@ def load_push_config():
         return None
 
 
-def _send_pushplus(token, title, content):
-    """通过 PushPlus 推送（Markdown 模板）
+def _send_pushplus(token, title, content, template="markdown"):
+    """通过 PushPlus 推送
 
     Args:
         token: PushPlus token
         title: 消息标题
-        content: 消息内容（支持 Markdown）
+        content: 消息内容
+        template: 模板类型（markdown / html / text），
+                  纯文本内容（如 JSON）建议用 text 避免被 markdown 渲染干扰
 
     Returns:
         tuple: (ok: bool, msg: str)
@@ -50,7 +52,7 @@ def _send_pushplus(token, title, content):
         "token": token,
         "title": title,
         "content": content,
-        "template": "markdown",
+        "template": template,
     }
 
     try:
@@ -65,7 +67,7 @@ def _send_pushplus(token, title, content):
         return False, result.get("msg", f"未知错误: {result}")
 
 
-def push_to_wechat(title, content):
+def push_to_wechat(title, content, template="markdown"):
     """推送消息到微信（PushPlus）
 
     未配置或 token 为空时优雅跳过（打印提示，不报错），符合项目
@@ -73,7 +75,8 @@ def push_to_wechat(title, content):
 
     Args:
         title: 消息标题
-        content: 消息内容（支持 Markdown）
+        content: 消息内容
+        template: 模板类型（markdown / html / text）
 
     Returns:
         tuple: (ok: bool, msg: str)。未配置时返回 (False, "未配置")
@@ -96,7 +99,7 @@ def push_to_wechat(title, content):
     if len(content) > MAX_LEN:
         content = content[:MAX_LEN] + "\n\n...(内容过长已截断，完整内容见本地 综合投资建议 文件)"
 
-    return _send_pushplus(token, title, content)
+    return _send_pushplus(token, title, content, template)
 
 
 if __name__ == "__main__":

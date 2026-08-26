@@ -407,6 +407,31 @@ class KOLAnalyzer:
             print(f"合并投资建议失败: {str(e)}")
             return None
     
+    def _resolve_monitor_params_path(self):
+        """定位盯盘参数 JSON 文件
+
+        优先本次生成路径；否则在归档目录/根目录按文件名日期取最新的
+        monitor_params_*.json（文件名日期为下一交易日，与 current_date 不一致，
+        不能用 current_date 直接拼）。
+
+        Returns:
+            str 或 None: 存在的文件路径
+        """
+        import glob
+
+        candidates = []
+        p = getattr(self, "_monitor_params_path", None)
+        if p:
+            candidates.append(p)
+        if self.archive_folder:
+            candidates += sorted(glob.glob(
+                os.path.join(self.archive_folder, "monitor_params_*.json")))
+        candidates += sorted(glob.glob("monitor_params_*.json"))
+        for c in candidates:
+            if os.path.exists(c):
+                return c
+        return None
+
     def run_all_tasks(self, skip_login: bool = False, include_position: bool = True):
         """顺序运行所有任务并合并投资建议
         
@@ -554,34 +579,37 @@ class KOLAnalyzer:
         # 推送综合投资建议到微信（PushPlus）
         try:
             if merged_advice:
-                push_content = merged_advice
-                # 附加盯盘参数原始 JSON（```json 代码块，复制粘贴即可直接使用）
-                monitor_path = getattr(self, "_monitor_params_path", None)
-                if not monitor_path or not os.path.exists(monitor_path):
-                    monitor_path = os.path.join(self.archive_folder, f"monitor_params_{self.current_date}.json")
-                if not os.path.exists(monitor_path):
-                    monitor_path = f"monitor_params_{self.current_date}.json"
-                if os.path.exists(monitor_path):
-                    try:
-                        with open(monitor_path, "r", encoding="utf-8") as f:
-                            raw_json = f.read().strip()
-                        json_block = "\n\n```json\n" + raw_json + "\n```"
-                        # 保证 JSON 完整：超长时优先截断建议正文（wechat_push 内部兜底为 30000）
-                        budget = 28000 - len(json_block)
-                        if budget > 0 and len(merged_advice) > budget:
-                            push_content = merged_advice[:budget] + "\n...(建议正文过长已截断，完整内容见本地文件)\n" + json_block
-                        else:
-                            push_content = merged_advice + json_block
-                    except Exception as e:
-                        print(f"附加盯盘参数失败（不影响推送）: {e}")
                 ok, msg = push_to_wechat(
                     f"KOL分析报告 {self.current_date}",
-                    push_content
+                    merged_advice
                 )
                 if ok:
                     print(f"✓ 综合投资建议已推送到微信: {msg}")
                 else:
                     print(f"微信推送未成功（不影响主流程）: {msg}")
+
+                # 盯盘参数完整 JSON 单独推送：不受建议正文长度/超长截断影响，
+                # 保证整个 json 都能复制使用（纯文本模板，避免 markdown 渲染干扰）
+                monitor_path = self._resolve_monitor_params_path()
+                if monitor_path:
+                    try:
+                        with open(monitor_path, "r", encoding="utf-8") as f:
+                            raw_json = f.read().strip()
+                        ok2, msg2 = push_to_wechat(
+                            f"盯盘参数 {self.current_date}（完整JSON）",
+                            raw_json,
+                            template="text",
+                        )
+                        if ok2:
+                            print(f"✓ 盯盘参数已推送到微信: {msg2}")
+                        else:
+                            print(f"盯盘参数推送未成功: {msg2}")
+                    except Exception as e:
+                        print(f"附加盯盘参数失败（不影响推送）: {e}")
+                else:
+                    print("未找到盯盘参数文件，跳过盯盘参数推送")
+            else:
+                print("无综合投资建议，跳过微信推送")
         except Exception as e:
             print(f"微信推送异常（不影响主流程）: {e}")
 
