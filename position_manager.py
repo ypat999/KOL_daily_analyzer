@@ -740,22 +740,51 @@ def fetch_stock_f10(code):
 
 
 def fetch_stock_news(code, limit=5):
-    """抓取个股近期新闻（东财新闻接口）
-    
+    """抓取个股近期新闻（yfinance优先，东财备用）
+
+    注意：yfinance 新闻为英文、主要覆盖大盘股；东财恢复后自动补充中文新闻。
+
     Args:
         code: 股票代码
         limit: 返回条数上限
-    
+
     Returns:
-        list: 新闻列表，每条含 title/time/source/summary
+        list: 新闻列表，每条含 title/time/source/summary/link
     """
-    import akshare as ak
-    
+    # 方案1：yfinance 新闻（非东财源，东财接口不可用）
     try:
+        import yfinance as yf
+        symbol = f"{code}.SS" if code.startswith(("6", "9")) else f"{code}.SZ"
+        news = yf.Ticker(symbol).news
+        news_list = []
+        for item in news[:limit]:
+            c = item.get("content") or {}
+            title = str(c.get("title", ""))
+            if not title:
+                continue
+            provider = c.get("provider") or {}
+            if isinstance(provider, dict):
+                source = str(provider.get("displayName", ""))
+            else:
+                source = str(provider)
+            news_list.append({
+                "title": title,
+                "time": str(c.get("pubDate", "")),
+                "source": source,
+                "summary": str(c.get("summary", ""))[:100],
+                "link": str(c.get("canonicalUrl", "")),
+            })
+        if news_list:
+            return news_list
+    except Exception as e:
+        print(f"  yfinance获取{code}新闻失败: {e}")
+
+    # 方案2：东财新闻接口（备用）
+    try:
+        import akshare as ak
         df = ak.stock_news_em(symbol=code)
         if df is None or len(df) == 0:
             return []
-        
         news_list = []
         for _, row in df.head(limit).iterrows():
             content = str(row.get("新闻内容", ""))
@@ -764,6 +793,7 @@ def fetch_stock_news(code, limit=5):
                 "time": str(row.get("发布时间", "")),
                 "source": str(row.get("文章来源", "")),
                 "summary": content[:100],
+                "link": "",
             })
         return news_list
     except Exception as e:
@@ -818,10 +848,10 @@ def fetch_stock_announcements(code, days=3):
 
 
 def fetch_position_restricted_release(days=30):
-    """一次性获取未来N天全市场限售解禁明细，按持仓股代码分组
+    """获取未来N天持仓股限售解禁明细（新浪按股查询优先，东财备用）
 
-    一次调用 stock_restricted_release_detail_em 获取全市场解禁数据，
-    再按持仓股代码过滤，避免逐股查询导致大量请求。
+    方案1：逐持仓股调用新浪解禁队列（偶发解析失败自动重试）；
+    方案2：一次调用东财全市场解禁数据再按持仓过滤。
 
     Args:
         days: 查询未来N天内的解禁
@@ -829,24 +859,74 @@ def fetch_position_restricted_release(days=30):
     Returns:
         dict: {code: [{date, type, shares, actual_shares, market_value, ratio}, ...]}
     """
-    import akshare as ak
     from datetime import datetime, timedelta
 
+    stocks = load_positions().get("stocks", [])
+    codes = [s.get("code", "") for s in stocks if s.get("code") and s.get("code") != "000000"]
+    if not codes:
+        return {}
+
+    today = datetime.now()
+    end = today + timedelta(days=days)
+
+    def _in_range(date_str):
+        try:
+            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+            return today.date() <= d.date() <= end.date()
+        except (ValueError, TypeError):
+            return False
+
+    # 方案1：新浪解禁队列（按股查询；接口偶发解析失败，重试3次）
+    restricted_map = {}
     try:
-        start_date = datetime.now().strftime("%Y%m%d")
-        end_date = (datetime.now() + timedelta(days=days)).strftime("%Y%m%d")
+        import akshare as ak
+        for code in codes:
+            df = None
+            for attempt in range(3):
+                try:
+                    df = ak.stock_restricted_release_queue_sina(symbol=code)
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
+                    df = None
+                    if attempt < 2:
+                        time.sleep(1 + attempt)
+            if df is None or df.empty:
+                continue
+            for _, row in df.iterrows():
+                date_str = str(row.get("解禁日期", ""))
+                if not _in_range(date_str):
+                    continue
+                # 新浪单位：解禁数量(万股)、市值(亿元)，统一转成 股/元 与报告一致
+                restricted_map.setdefault(code, []).append({
+                    "date": date_str[:10],
+                    "type": f"上市批次{row.get('上市批次', '')}",
+                    "shares": (_safe_float(row.get("解禁数量")) or 0) * 1e4,
+                    "actual_shares": None,
+                    "market_value": (_safe_float(row.get("解禁股流通市值")) or 0) * 1e8,
+                    "ratio": None,
+                })
+        if restricted_map:
+            return restricted_map
+    except Exception as e:
+        print(f"新浪解禁数据获取失败: {e}")
+
+    # 方案2：东财全市场解禁（备用）
+    try:
+        import akshare as ak
+        start_date = today.strftime("%Y%m%d")
+        end_date = end.strftime("%Y%m%d")
         df = ak.stock_restricted_release_detail_em(
             start_date=start_date, end_date=end_date
         )
         if df is None or df.empty:
             return {}
 
-        # 按"股票代码"列分组
+        # 按"股票代码"列分组，仅保留持仓股
         code_col = "股票代码" if "股票代码" in df.columns else df.columns[1]
-        restricted_map = {}
         for _, row in df.iterrows():
             code = str(row.get(code_col, "")).strip()
-            if not code:
+            if code not in codes:
                 continue
             restricted_map.setdefault(code, []).append({
                 "date": str(row.get("解禁时间", ""))[:10],

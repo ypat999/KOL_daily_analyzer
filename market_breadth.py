@@ -245,22 +245,61 @@ def get_index_ma_deviation():
 
 def get_dragon_tiger_list():
     """获取龙虎榜数据
-    
-    注意：龙虎榜数据仅东财提供，无新浪替代。
-    东财不可用时返回None，不影响整体分析。
-    
+
+    数据源：优先新浪（偶发解析失败，自动重试），东财备用。
+    东财不可用时新浪兜底，新浪无数据时返回None，不影响整体分析。
+
     Returns:
         dict: 龙虎榜个股及买卖席位
     """
     if not AKSHARE_AVAILABLE:
         return None
-    
+
+    today = datetime.now().strftime("%Y%m%d")
+    candidates = (today,
+                  (datetime.now() - timedelta(days=1)).strftime("%Y%m%d"),
+                  (datetime.now() - timedelta(days=2)).strftime("%Y%m%d"))
+
+    # 方案1：新浪龙虎榜（偶发解析失败，重试3次）
+    for attempt in range(3):
+        try:
+            df = None
+            for try_date in candidates:
+                try:
+                    df = ak.stock_lhb_detail_daily_sina(date=try_date)
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
+                    continue
+            if df is None or df.empty:
+                print("龙虎榜数据暂无（当日及最近两日无数据）")
+                return None
+            top_items = []
+            for _, row in df.head(10).iterrows():
+                top_items.append({
+                    "code": str(row.get("股票代码", "")),
+                    "name": str(row.get("股票名称", "")),
+                    "reason": str(row.get("指标", "")),
+                    "net_buy": None,  # 新浪无净买额字段
+                })
+            return {
+                "date": today,
+                "count": len(df),
+                "top_items": top_items,
+            }
+        except Exception as e:
+            if attempt < 2:
+                wait = (attempt + 1) * 2
+                print(f"新浪龙虎榜获取失败（第{attempt+1}次），{wait}秒后重试: {e}")
+                time.sleep(wait)
+            else:
+                print(f"新浪龙虎榜获取失败: {e}")
+
+    # 方案2：东财龙虎榜（备用，可提供净买额）
     try:
-        today = datetime.now().strftime("%Y%m%d")
         # 龙虎榜个股明细（东财无数据时可能抛 TypeError，需逐日回退）
         df = None
-        for try_date in (today, (datetime.now() - timedelta(days=1)).strftime("%Y%m%d"),
-                         (datetime.now() - timedelta(days=2)).strftime("%Y%m%d")):
+        for try_date in candidates:
             try:
                 df = ak.stock_lhb_detail_em(start_date=try_date, end_date=try_date)
                 if df is not None and not df.empty:
@@ -272,7 +311,7 @@ def get_dragon_tiger_list():
         if df is None or df.empty:
             print("龙虎榜数据暂无（当日及最近两日无数据）")
             return None
-        
+
         # 取前10只
         top_items = []
         for _, row in df.head(10).iterrows():
@@ -285,7 +324,7 @@ def get_dragon_tiger_list():
             if isinstance(item["net_buy"], (int, float)):
                 item["net_buy"] = round(float(item["net_buy"]) / 1e8, 2)  # 转为亿元
             top_items.append(item)
-        
+
         return {
             "date": today,
             "count": len(df),
