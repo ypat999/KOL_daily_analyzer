@@ -352,12 +352,15 @@ class KOLAnalyzer:
             print(f"综合投资建议已保存到: {merged_advice_path}")
             
             # 生成盯盘参数文件（供 market_monitor.py 读取，盘中条件触发时弹窗提醒）
+            # 参数服务于"下一交易日"：生成器内部优先取建议文本"作战计划（YYYY-MM-DD）"日期
+            self._monitor_params_path = None
             try:
                 from generate_monitor_params import generate_monitor_params
                 monitor_file = generate_monitor_params(
                     merged_advice, self.current_date, self.archive_folder, use_llm=False
                 )
                 if monitor_file:
+                    self._monitor_params_path = monitor_file
                     print(f"盯盘参数已生成: {monitor_file}")
             except Exception as e:
                 print(f"生成盯盘参数失败（不影响主流程）: {e}")
@@ -547,7 +550,9 @@ class KOLAnalyzer:
             if merged_advice:
                 push_content = merged_advice
                 # 附加盯盘参数原始 JSON（```json 代码块，复制粘贴即可直接使用）
-                monitor_path = os.path.join(self.archive_folder, f"monitor_params_{self.current_date}.json")
+                monitor_path = getattr(self, "_monitor_params_path", None)
+                if not monitor_path or not os.path.exists(monitor_path):
+                    monitor_path = os.path.join(self.archive_folder, f"monitor_params_{self.current_date}.json")
                 if not os.path.exists(monitor_path):
                     monitor_path = f"monitor_params_{self.current_date}.json"
                 if os.path.exists(monitor_path):

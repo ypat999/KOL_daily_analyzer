@@ -495,7 +495,8 @@ def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=Fals
 
     Args:
         advice_text: 综合投资建议全文
-        date: 目标交易日（YYYY-MM-DD）
+        date: 兜底目标交易日（YYYY-MM-DD）。盯盘参数服务于"下一交易日"，
+              因此优先取建议文本中"作战计划（YYYY-MM-DD）"的日期，取不到才用此值。
         archive_folder: 归档目录（生成文件写到这里 + 项目根目录）
         use_llm: 是否调用 DeepSeek 补充复杂条件
         out_path: 自定义输出路径（优先于 archive_folder）
@@ -504,6 +505,10 @@ def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=Fals
     Returns:
         str: 生成的参数文件路径；失败返回 None
     """
+    # 目标交易日：文本"作战计划（YYYY-MM-DD）"优先（参数是给下一交易日用的，不能定在总结当天）
+    m = re.search(r"作战计划\s*[（(]\s*(\d{4}-\d{2}-\d{2})", advice_text)
+    if m:
+        date = m.group(1)
     alerts = []
     alerts += parse_price_table(advice_text)
     alerts += parse_if_then(advice_text)
