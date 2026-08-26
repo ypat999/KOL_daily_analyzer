@@ -1318,10 +1318,10 @@ def _match_industry(industry, all_names):
 
 
 def get_stock_industry_em(industry):
-    """将任意来源的行业名映射为东财行业名（东财不可用时降级同花顺）
+    """将任意来源的行业名映射为板块名（优先同花顺，东财备用）
 
-    巨潮行业名（如"农业"）与东财行业名（如"种植业"）不一致会导致
-    stock_board_industry_hist_em 查不到K线。本函数用全行业列表做模糊匹配。
+    巨潮行业名（如"农业"）与板块名（如"种植业"）不一致会导致
+    K线查询失败。本函数用全行业列表做模糊匹配。
 
     Args:
         industry: 任意来源的行业名
@@ -1332,15 +1332,7 @@ def get_stock_industry_em(industry):
     if not AKSHARE_AVAILABLE or not industry:
         return industry
 
-    # 方案1：东财行业列表
-    try:
-        df = ak.stock_board_industry_name_em()
-        if df is not None and not df.empty and "板块名称" in df.columns:
-            return _match_industry(industry, df["板块名称"].astype(str).tolist())
-    except Exception as e:
-        print(f"  东财行业匹配失败: {e}")
-
-    # 方案2：同花顺行业列表（东财接口当前网络不通时降级）
+    # 方案1：同花顺行业列表（东财接口不可用，同花顺优先）
     try:
         df = ak.stock_board_industry_name_ths()
         if df is not None and not df.empty and "name" in df.columns:
@@ -1348,11 +1340,19 @@ def get_stock_industry_em(industry):
     except Exception as e:
         print(f"  同花顺行业匹配失败: {e}")
 
+    # 方案2：东财行业列表
+    try:
+        df = ak.stock_board_industry_name_em()
+        if df is not None and not df.empty and "板块名称" in df.columns:
+            return _match_industry(industry, df["板块名称"].astype(str).tolist())
+    except Exception as e:
+        print(f"  东财行业匹配失败: {e}")
+
     return industry
 
 
 def get_industry_kline(industry_name, days=30):
-    """获取行业板块日K线（优先东财，东财不可用时降级同花顺）
+    """获取行业板块日K线（优先同花顺，东财备用）
 
     Args:
         industry_name: 行业名称（如 "电力"、"种植业"），需与板块分类一致
@@ -1366,8 +1366,20 @@ def get_industry_kline(industry_name, days=30):
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
 
-    # 方案1：东财行业K线（接口偶发超时，3次指数退避重试）
-    em_failed = True
+    # 方案1：同花顺行业K线（东财接口不可用，同花顺优先）
+    try:
+        df = ak.stock_board_industry_index_ths(
+            symbol=industry_name, start_date=start_date, end_date=end_date
+        )
+        if df is not None and not df.empty:
+            # 归一化列名：同花顺用"收盘价"，后续逻辑统一用"收盘"
+            if "收盘价" in df.columns and "收盘" not in df.columns:
+                df = df.rename(columns={"收盘价": "收盘"})
+            return df
+    except Exception as e:
+        print(f"  同花顺获取行业 {industry_name} K线失败: {e}")
+
+    # 方案2：东财行业K线（接口偶发超时，3次指数退避重试）
     for attempt in range(3):
         try:
             df = ak.stock_board_industry_hist_em(
@@ -1379,32 +1391,14 @@ def get_industry_kline(industry_name, days=30):
             )
             if df is not None and not df.empty:
                 return df
-            em_failed = True
-            break
+            return None
         except Exception as e:
-            em_failed = True
             if attempt < 2:
                 wait = (attempt + 1) * 2
                 print(f"  获取行业 {industry_name} K线失败（第{attempt+1}次），{wait}秒后重试: {e}")
                 time.sleep(wait)
             else:
                 print(f"  东财获取行业 {industry_name} K线失败: {e}")
-
-    # 方案2：同花顺行业K线（东财不可用时降级）
-    if em_failed:
-        try:
-            df = ak.stock_board_industry_index_ths(
-                symbol=industry_name, start_date=start_date, end_date=end_date
-            )
-            if df is not None and not df.empty:
-                # 归一化列名：同花顺用"收盘价"，后续逻辑统一用"收盘"
-                if "收盘价" in df.columns and "收盘" not in df.columns:
-                    df = df.rename(columns={"收盘价": "收盘"})
-                print(f"  同花顺获取行业 {industry_name} K线成功 ({len(df)}条)")
-                return df
-            print(f"  同花顺获取行业 {industry_name} K线失败（数据为空）")
-        except Exception as e:
-            print(f"  同花顺获取行业 {industry_name} K线失败: {e}")
     return None
 
 

@@ -413,45 +413,71 @@ def volume_ratio(code, kind, quote, daily_df):
 
 
 # ============================================================
-# 历史两市成交额（东财，盘后/连续N日条件用）
+# 历史两市成交额（腾讯，盘后/连续N日条件用；东财接口不可用）
 # ============================================================
+
+def _fetch_index_amount_tx(symbol):
+    """腾讯指数日K成交额（万元），仅取近80个交易日，避免全量历史
+
+    Args:
+        symbol: 指数代码，如 "sh000001" / "sz399106"
+
+    Returns:
+        list: [{date: "2026-08-21", amount_wan: float}, ...] 按日期升序
+    """
+    try:
+        import json
+        import requests
+    except ImportError:
+        return []
+    url = "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get"
+    today = datetime.now()
+    start = (today - timedelta(days=45)).strftime("%Y-%m-%d")
+    end = today.strftime("%Y-%m-%d")
+    params = {
+        "_var": "kline_dayqfq",
+        "param": f"{symbol},day,{start},{end},80,qfq",
+        "r": "0.1",
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        text = r.text
+        obj = json.loads(text[text.find("={") + 1:])
+        day = obj["data"][symbol].get("day") or obj["data"][symbol].get("qfqday")
+        out = []
+        for row in day:
+            try:
+                # QQ日K第9个字段为成交额（万元）
+                out.append({"date": row[0], "amount_wan": float(row[8])})
+            except (ValueError, TypeError, IndexError):
+                continue
+        return out
+    except Exception as e:
+        print(f"[历史成交额] 腾讯获取 {symbol} 失败: {e}")
+        return []
+
 
 def market_amount_history(days=10):
     """最近 N 个交易日两市成交额（亿元），按日期升序
 
     [{date: "2026-08-21", amount_yi: 18899.0}, ...]
     """
-    try:
-        import akshare as ak
-    except ImportError:
-        print("[历史成交额] akshare 不可用")
+    sh = _fetch_index_amount_tx("sh000001")
+    sz = _fetch_index_amount_tx("sz399106")
+    if not sh or not sz:
         return []
-    for attempt in range(3):
-        try:
-            sh = ak.stock_zh_index_daily_em(symbol="sh000001")
-            sz = ak.stock_zh_index_daily_em(symbol="sz399106")
-            if sh is None or sz is None or sh.empty or sz.empty:
-                return []
-            sh["date"] = sh["date"].astype(str)
-            sz["date"] = sz["date"].astype(str)
-            merged = sh[["date", "amount"]].merge(sz[["date", "amount"]], on="date", suffixes=("_sh", "_sz"))
-            merged = merged.sort_values("date").tail(days)
-            out = []
-            for _, row in merged.iterrows():
-                try:
-                    out.append({
-                        "date": row["date"],
-                        "amount_yi": round((float(row["amount_sh"]) + float(row["amount_sz"])) / 1e8, 2),
-                    })
-                except (ValueError, TypeError):
-                    continue
-            return out
-        except Exception as e:
-            if attempt < 2:
-                time.sleep(2 + attempt * 2)
-            else:
-                print(f"[历史成交额] 获取失败: {e}")
-    return []
+    sh_map = {x["date"]: x["amount_wan"] for x in sh}
+    sz_map = {x["date"]: x["amount_wan"] for x in sz}
+    # 取两指数共有交易日，按日期升序
+    common_dates = sorted(set(sh_map) & set(sz_map))
+    out = []
+    for d in common_dates[-days:]:
+        # 万元 → 亿元（/1e4），两市相加
+        out.append({
+            "date": d,
+            "amount_yi": round((sh_map[d] + sz_map[d]) / 1e4, 2),
+        })
+    return out
 
 
 AMOUNT_LOG_FILE = os.path.join("monitor_logs", "daily_amount.json")

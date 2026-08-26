@@ -304,7 +304,7 @@ def _resolve_stock_code(target_name):
                     time.sleep((attempt + 1) * 2)
                 continue
         if df is None or df.empty:
-            df = ak.stock_zh_a_spot_em()
+            return None
         for _, row in df.iterrows():
             name = str(row.get("名称", ""))
             code = str(row.get("代码", ""))
