@@ -39,8 +39,8 @@ def _send_pushplus(token, title, content, template="markdown"):
         token: PushPlus token
         title: 消息标题
         content: 消息内容
-        template: 模板类型（markdown / html / text），
-                  纯文本内容（如 JSON）建议用 text 避免被 markdown 渲染干扰
+        template: 模板类型（markdown / html / txt），
+                  纯文本内容（如 JSON）用 txt（PushPlus 合法模板，text 不存在）
 
     Returns:
         tuple: (ok: bool, msg: str)
@@ -76,7 +76,7 @@ def push_to_wechat(title, content, template="markdown"):
     Args:
         title: 消息标题
         content: 消息内容
-        template: 模板类型（markdown / html / text）
+        template: 模板类型（markdown / html / txt）
 
     Returns:
         tuple: (ok: bool, msg: str)。未配置时返回 (False, "未配置")

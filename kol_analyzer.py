@@ -598,7 +598,7 @@ class KOLAnalyzer:
                         ok2, msg2 = push_to_wechat(
                             f"盯盘参数 {self.current_date}（完整JSON）",
                             raw_json,
-                            template="text",
+                            template="txt",
                         )
                         if ok2:
                             print(f"✓ 盯盘参数已推送到微信: {msg2}")
