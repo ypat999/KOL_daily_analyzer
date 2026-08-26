@@ -1269,58 +1269,93 @@ def run_momentum_analysis(bili_advice=None, wechat_advice=None, weibo_advice=Non
 # 个股 vs 所属行业 相对强弱（Relative Strength）
 # ============================================================
 
+# 巨潮证监会行业分类名 → 板块名 桥接（两者无子串关系，模糊匹配无法覆盖）
+# 目标名取自同花顺行业板块（已验证存在）；东财不可用时由 get_industry_kline 降级同花顺
+_INDUSTRY_ALIAS = {
+    "住宿业": "旅游及酒店",
+    "住宿和餐饮业": "旅游及酒店",
+    "货币金融服务": "银行",
+    "资本市场服务": "证券",
+    "保险业": "保险",
+    "软件和信息技术服务业": "软件开发",
+    "互联网和相关服务": "互联网电商",
+    "铁路运输业": "公路铁路运输",
+    "航空运输业": "机场航运",
+    "水上运输业": "港口航运",
+    "零售业": "零售",
+}
+
+
+def _match_industry(industry, all_names):
+    """在行业名列表中做匹配，返回最具体匹配名（未匹配返回原行业名）
+
+    匹配顺序：
+    1. 巨潮证监会行业名桥接别名（如 "住宿业" → "旅游及酒店"）
+    2. 精确匹配
+    3. 行业名包含输入子串（如 "农" → "种植业"、"农产品加工"）
+    4. 输入包含行业名子串
+    多个匹配时取最短名（最具体）。
+    """
+    if not industry:
+        return industry
+    # 1. 桥接别名（优先）
+    if industry in _INDUSTRY_ALIAS:
+        return _INDUSTRY_ALIAS[industry]
+    # 2. 精确匹配
+    if industry in all_names:
+        return industry
+    # 3. 子串匹配（双向）
+    candidates = []
+    for name in all_names:
+        if not name:
+            continue
+        if industry in name or name in industry:
+            candidates.append(name)
+    if candidates:
+        # 取最短名（最具体）
+        return min(candidates, key=len)
+    return industry
+
+
 def get_stock_industry_em(industry):
-    """将任意来源的行业名映射为东财行业名
+    """将任意来源的行业名映射为东财行业名（东财不可用时降级同花顺）
 
     巨潮行业名（如"农业"）与东财行业名（如"种植业"）不一致会导致
     stock_board_industry_hist_em 查不到K线。本函数用全行业列表做模糊匹配。
-
-    匹配规则：
-    1. 精确匹配（去除空白与罗马数字后缀 Ⅲ/II）
-    2. 行业名包含输入子串（如 "农" → "种植业"、"农产品加工"）
-    3. 输入包含行业名子串
-    多个匹配时取最短名（最具体）。
 
     Args:
         industry: 任意来源的行业名
 
     Returns:
-        str: 东财行业名（未匹配返回原 industry）
+        str: 匹配到的行业名（未匹配返回原 industry）
     """
     if not AKSHARE_AVAILABLE or not industry:
         return industry
+
+    # 方案1：东财行业列表
     try:
         df = ak.stock_board_industry_name_em()
-        if df is None or df.empty or "板块名称" not in df.columns:
-            return industry
-        all_names = df["板块名称"].astype(str).tolist()
-
-        # 1. 精确匹配
-        if industry in all_names:
-            return industry
-
-        # 2. 子串匹配（双向）
-        candidates = []
-        for name in all_names:
-            if not name:
-                continue
-            if industry in name or name in industry:
-                candidates.append(name)
-
-        if candidates:
-            # 取最短名（最具体）
-            return min(candidates, key=len)
-        return industry
+        if df is not None and not df.empty and "板块名称" in df.columns:
+            return _match_industry(industry, df["板块名称"].astype(str).tolist())
     except Exception as e:
         print(f"  东财行业匹配失败: {e}")
-        return industry
+
+    # 方案2：同花顺行业列表（东财接口当前网络不通时降级）
+    try:
+        df = ak.stock_board_industry_name_ths()
+        if df is not None and not df.empty and "name" in df.columns:
+            return _match_industry(industry, df["name"].astype(str).tolist())
+    except Exception as e:
+        print(f"  同花顺行业匹配失败: {e}")
+
+    return industry
 
 
 def get_industry_kline(industry_name, days=30):
-    """获取行业板块日K线（东财行业）
+    """获取行业板块日K线（优先东财，东财不可用时降级同花顺）
 
     Args:
-        industry_name: 行业名称（如 "电力"、"种植业"），需与东财行业分类一致
+        industry_name: 行业名称（如 "电力"、"种植业"），需与板块分类一致
         days: 获取的日历日天数（实际交易日约2/3）
 
     Returns:
@@ -1331,7 +1366,8 @@ def get_industry_kline(industry_name, days=30):
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
 
-    # 东财接口偶发超时，3次指数退避重试
+    # 方案1：东财行业K线（接口偶发超时，3次指数退避重试）
+    em_failed = True
     for attempt in range(3):
         try:
             df = ak.stock_board_industry_hist_em(
@@ -1343,14 +1379,32 @@ def get_industry_kline(industry_name, days=30):
             )
             if df is not None and not df.empty:
                 return df
-            return None
+            em_failed = True
+            break
         except Exception as e:
+            em_failed = True
             if attempt < 2:
                 wait = (attempt + 1) * 2
                 print(f"  获取行业 {industry_name} K线失败（第{attempt+1}次），{wait}秒后重试: {e}")
                 time.sleep(wait)
             else:
-                print(f"  获取行业 {industry_name} K线失败: {e}")
+                print(f"  东财获取行业 {industry_name} K线失败: {e}")
+
+    # 方案2：同花顺行业K线（东财不可用时降级）
+    if em_failed:
+        try:
+            df = ak.stock_board_industry_index_ths(
+                symbol=industry_name, start_date=start_date, end_date=end_date
+            )
+            if df is not None and not df.empty:
+                # 归一化列名：同花顺用"收盘价"，后续逻辑统一用"收盘"
+                if "收盘价" in df.columns and "收盘" not in df.columns:
+                    df = df.rename(columns={"收盘价": "收盘"})
+                print(f"  同花顺获取行业 {industry_name} K线成功 ({len(df)}条)")
+                return df
+            print(f"  同花顺获取行业 {industry_name} K线失败（数据为空）")
+        except Exception as e:
+            print(f"  同花顺获取行业 {industry_name} K线失败: {e}")
     return None
 
 
