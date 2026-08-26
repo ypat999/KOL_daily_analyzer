@@ -546,16 +546,21 @@ class KOLAnalyzer:
         try:
             if merged_advice:
                 push_content = merged_advice
-                # 附加盯盘参数（供手机端查看今日条件，后台盯盘程序按此执行弹窗）
+                # 附加盯盘参数原始 JSON（```json 代码块，复制粘贴即可直接使用）
                 monitor_path = os.path.join(self.archive_folder, f"monitor_params_{self.current_date}.json")
                 if not os.path.exists(monitor_path):
                     monitor_path = f"monitor_params_{self.current_date}.json"
                 if os.path.exists(monitor_path):
                     try:
-                        from generate_monitor_params import format_params_markdown
                         with open(monitor_path, "r", encoding="utf-8") as f:
-                            payload = json.load(f)
-                        push_content = merged_advice.rstrip() + "\n" + format_params_markdown(payload)
+                            raw_json = f.read().strip()
+                        json_block = "\n\n```json\n" + raw_json + "\n```"
+                        # 保证 JSON 完整：超长时优先截断建议正文（wechat_push 内部兜底为 30000）
+                        budget = 28000 - len(json_block)
+                        if budget > 0 and len(merged_advice) > budget:
+                            push_content = merged_advice[:budget] + "\n...(建议正文过长已截断，完整内容见本地文件)\n" + json_block
+                        else:
+                            push_content = merged_advice + json_block
                     except Exception as e:
                         print(f"附加盯盘参数失败（不影响推送）: {e}")
                 ok, msg = push_to_wechat(
