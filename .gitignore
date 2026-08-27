@@ -228,3 +228,5 @@ push_config.json
 signal_kb.jsonl
 *.json
 !wechat_weread_accounts.json
+weread_qr.png
+monitor_logs/

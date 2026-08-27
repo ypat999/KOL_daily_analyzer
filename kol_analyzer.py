@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime, timedelta
-from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
+from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend, get_next_trading_day
 from bili_summary import run_bili_task
 from wechat_weread import run_wechat_task, WECHAT_ENABLED
 from weibo_get import run_weibo_task
@@ -254,6 +254,9 @@ class KOLAnalyzer:
         print(f"准备合并的投资建议内容长度: {len(combined_content)}字符")
         
         try:
+            # 目标交易日 = 数据日（current_date）的下一交易日，由程序确定而非 LLM 推算
+            target_date = get_next_trading_day(self.current_date)
+            
             # 根据是否有回测数据动态构建权重说明
             if backtest_stats:
                 weight_guidance = (
@@ -287,7 +290,9 @@ class KOLAnalyzer:
                     "输出语气：坚定自信但不傲慢，敢于表达明确观点，同时诚实标注不确定性。"
                 ),
                 userprompt=(
-                    "以下是来自三大平台的投资分析与动量数据，请汇编成【明日作战计划】（而非分析报告）：\n\n"
+                    f"以下是来自三大平台的投资分析与动量数据，请汇编成【明日作战计划】（而非分析报告）：\n\n"
+                    f"当前数据日期：{self.current_date}；本作战计划服务目标：{target_date}（下一交易日）。\n"
+                    f"标题务必写作战计划（{target_date}），正文中涉及日期一律使用 {target_date}，严禁自行推算日期。\n\n"
                     "请按以下结构输出，每部分必须可执行、可验证：\n\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
                     "第一部分：昨日复盘（如有）\n"
@@ -358,12 +363,14 @@ class KOLAnalyzer:
             print(f"综合投资建议已保存到: {merged_advice_path}")
             
             # 生成盯盘参数文件（供 market_monitor.py 读取，盘中条件触发时弹窗提醒）
-            # 参数服务于"下一交易日"：生成器内部优先取建议文本"作战计划（YYYY-MM-DD）"日期
+            # 参数服务于"下一交易日"：目标日期由程序计算（target_date），不依赖建议文本推算；
+            # generated_from 指向真实的建议文件（按数据日命名）
             self._monitor_params_path = None
             try:
                 from generate_monitor_params import generate_monitor_params
                 monitor_file = generate_monitor_params(
-                    merged_advice, self.current_date, self.archive_folder, use_llm=False
+                    merged_advice, target_date, self.archive_folder, use_llm=False,
+                    meta_extra={"generated_from": f"综合投资建议_{self.current_date}.txt"},
                 )
                 if monitor_file:
                     self._monitor_params_path = monitor_file

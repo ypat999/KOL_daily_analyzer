@@ -17,6 +17,25 @@ def get_friday_date_for_weekend(current_date: datetime) -> datetime:
         return current_date - timedelta(days=weekday + 3)
 
 
+def get_next_trading_day(date_str: str) -> str:
+    """返回 date_str 之后的下一个交易日（简单日历规则，不含法定节假日）
+
+    周五 → 下周一(+3)，周六 → 下周一(+2)，周日 → 下周一(+1)，其余 +1。
+    用于确定"明日作战计划"/盯盘参数的目标日期，避免依赖 LLM 自行推算。
+    """
+    d = datetime.strptime(date_str, "%Y-%m-%d")
+    weekday = d.weekday()  # 0=周一, 6=周日
+    if weekday == 4:    # 周五
+        d += timedelta(days=3)
+    elif weekday == 5:  # 周六
+        d += timedelta(days=2)
+    elif weekday == 6:  # 周日
+        d += timedelta(days=1)
+    else:
+        d += timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
 def get_current_analysis_date():
     """
     获取当前分析应该使用的日期
