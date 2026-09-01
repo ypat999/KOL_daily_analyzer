@@ -17,6 +17,7 @@ from cookie_validator import _get_chrome_service
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from prediction_recorder import record_predictions_from_advice
+from stage_timer import stage, timed
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
@@ -802,11 +803,13 @@ def run_weibo_task():
             return None
     
     # 初始化浏览器
-    driver = setup_browser()
+    driver = timed("微博-浏览器初始化", setup_browser, group="微博-浏览器初始化")
     
     try:
         # 登录微博
-        if not login_and_save_cookie(driver):
+        with stage("微博-登录/Cookie校验"):
+            login_ok = login_and_save_cookie(driver)
+        if not login_ok:
             print("登录失败，无法继续执行微博任务")
             return None
         
@@ -815,13 +818,15 @@ def run_weibo_task():
         user_ids = WEIBO_USER_IDS
         for user_id in user_ids:
             print(f"\n处理用户ID: {user_id}")
-            result = get_weibo_content(driver, user_id)
+            result = timed(f"微博-抓取 {user_id}", get_weibo_content, driver, user_id,
+                           group="微博-单用户抓取")
             
             if result.get("need_relogin"):
                 print("检测到需要重新登录，正在重新登录...")
                 if perform_manual_login(driver):
                     print("重新登录成功，重试获取微博内容...")
-                    result = get_weibo_content(driver, user_id)
+                    result = timed(f"微博-重登后抓取 {user_id}", get_weibo_content, driver, user_id,
+                                   group="微博-单用户抓取")
                 else:
                     print("重新登录失败，跳过该用户")
                     continue
@@ -845,7 +850,9 @@ def run_weibo_task():
         
         if all_articles_content.strip():
             print(f"已收集微博内容，总长度：{len(all_articles_content)}字符")
-            investment_advice = generate_weibo_investment_advice(all_articles_content, archive_folder, current_date)
+            investment_advice = timed("微博-投资建议LLM", generate_weibo_investment_advice,
+                                      all_articles_content, archive_folder, current_date,
+                                      group="平台-投资建议LLM")
             print("\n微博任务完成")
             return investment_advice
         else:

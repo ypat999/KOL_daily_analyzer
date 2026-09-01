@@ -15,6 +15,8 @@ import math
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from stage_timer import stage
+
 try:
     import akshare as ak
     AKSHARE_AVAILABLE = True
@@ -287,13 +289,15 @@ def run_sector_volume_analysis(top_n=TOP_N):
         print("akshare 不可用，跳过板块放量监控")
         return None
 
-    names = get_industry_board_names()
+    with stage("板块放量-行业板块列表"):
+        names = get_industry_board_names()
     if not names:
         print("获取行业板块列表失败，跳过板块放量监控")
         return None
 
     print(f"扫描 {len(names)} 个行业板块...")
-    data = analyze_sector_volume(names, top_n=top_n)
+    with stage(f"板块放量-{len(names)}板块K线扫描"):
+        data = analyze_sector_volume(names, top_n=top_n)
     if not data:
         print("板块放量分析无结果")
         return None

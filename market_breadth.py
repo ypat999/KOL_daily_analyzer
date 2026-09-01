@@ -10,10 +10,14 @@
 数据源：akshare（优先）+ yfinance（兜底）
 """
 
+import json
+import os
 import time
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+
+from stage_timer import stage
 
 try:
     import akshare as ak
@@ -28,27 +32,53 @@ except ImportError:
     YFINANCE_AVAILABLE = False
 
 
+_SPOT_STATS_CACHE = {}  # date -> dict，进程内缓存
+
+
+def _spot_stats_cache_path(date_str):
+    """当日涨跌停统计的文件缓存（放系统临时目录，避免污染仓库）"""
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), f"kol_spot_stats_{date_str}.json")
+
+
 def get_limit_up_down_stats():
     """获取涨跌停家数统计
     
     优先使用新浪实时行情统计涨跌停，东财接口作为备用。
+    stock_zh_a_spot() 需分页抓全市场 70+ 页，非常慢（1分半+），
+    因此结果按交易日缓存（进程内 + 临时文件），当日多次调用直接秒回。
     
     Returns:
         dict: 涨停/跌停家数、封板率等
     """
     if not AKSHARE_AVAILABLE:
         return None
-    
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    if today in _SPOT_STATS_CACHE:
+        return _SPOT_STATS_CACHE[today]
+
+    cache_path = _spot_stats_cache_path(today)
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            _SPOT_STATS_CACHE[today] = cached
+            print(f"涨跌停统计使用当日缓存（避免重复抓取70页行情）")
+            return cached
+        except Exception:
+            pass
+
     # 方案1：用新浪实时行情统计涨跌停（带重试，应对偶发 Connection aborted）
     df = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             df = ak.stock_zh_a_spot()
             if df is not None and not df.empty:
                 break
         except Exception as e:
-            if attempt < 2:
-                wait = (attempt + 1) * 2
+            if attempt < 1:
+                wait = attempt + 1
                 print(f"新浪实时行情获取失败（第{attempt + 1}次），{wait}秒后重试: {e}")
                 time.sleep(wait)
             else:
@@ -85,13 +115,20 @@ def get_limit_up_down_stats():
                 total = limit_up_count + limit_down_count
                 limit_up_ratio = limit_up_count / total * 100 if total > 0 else 0
 
-                return {
+                result = {
                     "limit_up_count": limit_up_count,
                     "limit_down_count": limit_down_count,
                     "limit_up_ratio": round(limit_up_ratio, 1),
                     "consecutive_board_count": 0,  # 新浪无法获取连板数据
                     "max_consecutive_height": 0,
                 }
+                _SPOT_STATS_CACHE[today] = result
+                try:
+                    with open(cache_path, "w", encoding="utf-8") as f:
+                        json.dump(result, f, ensure_ascii=False)
+                except Exception:
+                    pass
+                return result
     except Exception as e:
         print(f"新浪实时行情统计涨跌停失败: {e}")
     
@@ -464,14 +501,27 @@ def run_market_breadth_analysis():
     """
     print("开始市场宽度分析...")
     
-    limit_stats = get_limit_up_down_stats()
-    north_flow = get_north_flow()
-    index_deviations = get_index_ma_deviation()
+    # 各数据块独立 try：单个接口失败不中断整个分析（否则缓存不设，会被重复调用）
+    def _safe(fn, name):
+        try:
+            return fn()
+        except Exception as e:
+            print(f"市场宽度-{name} 获取失败（跳过该块）: {e}")
+            return None
+
+    with stage("市场宽度-涨跌停统计"):
+        limit_stats = _safe(get_limit_up_down_stats, "涨跌停统计")
+    with stage("市场宽度-北向资金"):
+        north_flow = _safe(get_north_flow, "北向资金")
+    with stage("市场宽度-指数均线偏离"):
+        index_deviations = _safe(get_index_ma_deviation, "指数均线偏离")
     temperature = calculate_market_temperature(limit_stats, north_flow, index_deviations)
     
     # 龙虎榜和涨停板池详情
-    dragon_tiger = get_dragon_tiger_list()
-    limit_up_detail = get_limit_up_pool_detail()
+    with stage("市场宽度-龙虎榜"):
+        dragon_tiger = _safe(get_dragon_tiger_list, "龙虎榜")
+    with stage("市场宽度-涨停板池"):
+        limit_up_detail = _safe(get_limit_up_pool_detail, "涨停板池")
     
     lines = []
     lines.append("=" * 60)

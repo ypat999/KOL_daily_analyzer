@@ -3,6 +3,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from deepseek_summary import deepseek_summary
+from stage_timer import stage
 import pandas as pd
 import numpy as np
 from urllib3.exceptions import HTTPError
@@ -976,7 +977,8 @@ def analyze_targets(targets):
         reasons = idx.get("reasons", [])
         
         print(f"正在分析指数: {name}({code})")
-        df = get_index_kline(code)
+        with stage(f"动量K线 指数 {name}", group="动量-指数K线抓取"):
+            df = get_index_kline(code)
         
         if df is not None:
             factors = calculate_momentum_factors(df)
@@ -1015,7 +1017,8 @@ def analyze_targets(targets):
         reasons = stock.get("reasons", [])
         
         print(f"正在分析股票: {name}({code})")
-        df = get_stock_kline(code)
+        with stage(f"动量K线 {name}({code})", group="动量-个股K线抓取"):
+            df = get_stock_kline(code)
         
         if df is not None:
             factors = calculate_momentum_factors(df)

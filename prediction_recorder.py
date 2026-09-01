@@ -72,7 +72,35 @@ def generate_yesterday_review(current_date_str, base_dir="."):
     
     # 延迟导入避免循环依赖
     from backtest_analyzer import get_actual_performance, score_prediction
-    
+
+    # 先并行批量抓取行情（去重 + 多线程），避免逐条串行导致复盘长达几十分钟。
+    # get_actual_performance 内部有当日缓存，这里传入 bypass_rate_limit 跳过全局
+    # 1s 限速锁，让并发真正生效。
+    from concurrent.futures import ThreadPoolExecutor
+
+    unique_preds = [p for p in preds
+                    if p.get("target") and p.get("target_type") in ("index", "stock")]
+    seen = set()
+    tasks = []
+    for p in unique_preds:
+        key = (p.get("target_type"), p.get("target"))
+        if key in seen:
+            continue
+        seen.add(key)
+        tasks.append(p)
+
+    perf_map = {}
+    if tasks:
+        print(f"  并行抓取 {len(tasks)} 个唯一标的的实际行情（去重后）...")
+        def _fetch(p):
+            t = p.get("target")
+            tt = p.get("target_type")
+            return (tt, t), get_actual_performance(t, tt, prev_date, horizon=1,
+                                                   bypass_rate_limit=True)
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for key, val in ex.map(_fetch, tasks):
+                perf_map[key] = val
+
     channel_label = {"bili": "B站", "weibo": "微博", "wechat": "微信", "merged": "综合"}
     
     review_lines = []
@@ -96,8 +124,9 @@ def generate_yesterday_review(current_date_str, base_dir="."):
         if not target or target_type not in ("index", "stock"):
             continue
         
-        # 计算从预测日到今天的表现
-        actual = get_actual_performance(target, target_type, prev_date, horizon=1)
+        # 计算从预测日到今天的表现（优先用并行预抓结果，未命中再现抓）
+        actual = perf_map.get((target_type, target)) or get_actual_performance(
+            target, target_type, prev_date, horizon=1)
         
         if actual is None:
             no_data_count += 1

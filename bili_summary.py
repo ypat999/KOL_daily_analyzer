@@ -34,6 +34,7 @@ from extract_subtitle import extract_subtitle_from_url
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from prediction_recorder import record_predictions_from_advice
+from stage_timer import timed
 
 LIMIT_HOURS = 18  # 平时限定小时内（18小时），周末只收录周五收盘后发布的内容
 
@@ -105,10 +106,12 @@ def setup_browser():
 
 # 工具函数：检查时间是否在限定小时内
 
-def is_within_limit_hours(publish_date: str) -> bool:
+def is_within_limit_hours(publish_date) -> bool:
     """
     检查发布时间是否在限定小时内
-    支持格式：'今天'、'X小时前'、'昨天'、'X天前'、'2025-01-01'等
+    publish_date 支持两种形态：
+      - datetime：API 路径直接传入精确发布时间（保留精度，不再 strftime 后正则反向解析）
+      - str：页面相对时间（'今天'、'X小时前'、'昨天'、'X天前'）或日期串（'2025-01-01'、'2025-01-01 22:02'）
     周末运行时，收录周五收盘后所有时间的内容
     周一早上9点前也使用周末逻辑（因为还未开盘）
     """
@@ -121,12 +124,17 @@ def is_within_limit_hours(publish_date: str) -> bool:
     # 周一早上9点前也使用周末逻辑
     is_monday_early = weekday == 0 and now.hour < 9  # 周一且9点前
     is_weekend_period = is_weekend or is_monday_early
+
+    # API 路径：直接按精确时间判断
+    if isinstance(publish_date, datetime):
+        return _within_limit_by_datetime(publish_date, now, is_weekend_period)
     
-    # 处理日期格式：'YYYY-MM-DD' 或 'MM-DD' 或 'M-D'
-    date_match = re.match(r'(\d{4}-)?(\d{1,2}-\d{1,2})', publish_date)
+    # 处理日期格式：'YYYY-MM-DD' / 'MM-DD' / 'M-D'，可带时间 'YYYY-MM-DD HH:MM'
+    date_match = re.match(r'(\d{4}-)?(\d{1,2}-\d{1,2})(?:[ T](\d{1,2}:\d{2}))?', publish_date)
     if date_match:
         try:
             date_part = date_match.group(2)  # 获取MM-DD部分
+            time_part = date_match.group(3)  # 可能带 HH:MM（如 "2026-09-01 22:02"）
             
             # 如果有年份，直接使用；如果没有，使用当前年份
             if date_match.group(1):
@@ -142,16 +150,14 @@ def is_within_limit_hours(publish_date: str) -> bool:
                 if video_date > now:
                     video_date = video_date.replace(year=current_year - 1)
             
-            # 周末逻辑：收录周五收盘后所有内容
-            if is_weekend_period:
-                friday_date = get_friday_date_for_weekend(now)
-                friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
-                return video_date.date() >= friday_close_time.date()
-            else:
-                # 平时使用18小时限制
-                delta = now - video_date
-                hours_diff = delta.total_seconds() / 3600
-                return hours_diff <= LIMIT_HOURS
+            # 带时间则用真实发布时间（此前丢弃 HH:MM，晚上发的视频会被当成当天
+            # 00:00，隔天凌晨运行时误判 >18h 而跳过）
+            if time_part:
+                video_date = video_date.replace(
+                    hour=int(time_part.split(":")[0]),
+                    minute=int(time_part.split(":")[1]))
+            
+            return _within_limit_by_datetime(video_date, now, is_weekend_period)
         except ValueError:
             return False
 
@@ -204,6 +210,18 @@ def is_within_limit_hours(publish_date: str) -> bool:
             return False
             
     return False  # 默认不包含
+
+
+def _within_limit_by_datetime(video_date: datetime, now: datetime, is_weekend_period: bool) -> bool:
+    """按精确发布时间判断：周末/周一早收录周五收盘后，平时 18 小时限制"""
+    if is_weekend_period:
+        friday_date = get_friday_date_for_weekend(now)
+        friday_close_time = friday_date.replace(hour=15, minute=0, second=0, microsecond=0)
+        return video_date.date() >= friday_close_time.date()
+    else:
+        delta = now - video_date
+        hours_diff = delta.total_seconds() / 3600
+        return hours_diff <= LIMIT_HOURS
 
 # 工具函数：登录与cookie管理（提前到主流程前定义）
 def login_and_save_cookie(driver) -> bool:
@@ -410,10 +428,12 @@ def run_bili_task(use_api_for_videos: bool = True):
     for attempt in range(1, max_retries + 1):
         if use_api_for_videos:
             print(f"使用API方式获取视频列表（第{attempt}次尝试）")
-            all_videos = get_videos_by_api_threaded(UP_MIDS, max_workers=1)
+            all_videos = timed("B站-视频列表(API)", get_videos_by_api_threaded, UP_MIDS,
+                               max_workers=1, group="B站-视频列表获取")
         else:
             print(f"使用浏览器方式获取视频列表（第{attempt}次尝试）")
-            all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=1)
+            all_videos = timed("B站-视频列表(浏览器)", get_videos_by_selenium_threaded, UP_MIDS,
+                               max_workers=1, group="B站-视频列表获取")
         
         print(f"总共获取到 {len(all_videos)} 个视频")
         
@@ -433,10 +453,12 @@ def run_bili_task(use_api_for_videos: bool = True):
         print("\n当前方式未获取到视频，自动切换另一种方式兜底重试...")
         if use_api_for_videos:
             print("使用浏览器方式获取视频列表（兜底重试）")
-            all_videos = get_videos_by_selenium_threaded(UP_MIDS, max_workers=1)
+            all_videos = timed("B站-视频列表(浏览器兜底)", get_videos_by_selenium_threaded, UP_MIDS,
+                               max_workers=1, group="B站-视频列表获取")
         else:
             print("使用API方式获取视频列表（兜底重试）")
-            all_videos = get_videos_by_api_threaded(UP_MIDS, max_workers=1)
+            all_videos = timed("B站-视频列表(API兜底)", get_videos_by_api_threaded, UP_MIDS,
+                               max_workers=1, group="B站-视频列表获取")
         print(f"兜底重试后总共获取到 {len(all_videos)} 个视频")
     
     if not all_videos:
@@ -445,7 +467,8 @@ def run_bili_task(use_api_for_videos: bool = True):
     
     # 使用多线程并行获取所有视频的字幕URL（优先使用API方式）
     print("开始使用多线程并行获取视频字幕URL（API方式）...")
-    subtitle_results = get_subtitle_urls_threaded(all_videos, archive_folder, max_workers=5, use_api=True)
+    subtitle_results = timed("B站-字幕URL获取(5线程)", get_subtitle_urls_threaded,
+                             all_videos, archive_folder, max_workers=5, use_api=True)
     print(f"成功获取到 {len(subtitle_results)} 个视频的字幕URL")
     
     # 处理获取到字幕的视频
@@ -470,7 +493,9 @@ def run_bili_task(use_api_for_videos: bool = True):
                         print(f"视频《{video['title']}》使用本地字幕文件")
                     else:
                         # 从subtitle_url提取字幕
-                        subtitle = extract_subtitle_from_url(subtitle_url)
+                        subtitle = timed(f"B站-字幕下载 {video['title'][:12]}",
+                                         extract_subtitle_from_url, subtitle_url,
+                                         group="B站-字幕下载")
                         if not subtitle:
                             print(f"视频《{video['title']}》字幕提取失败")
                             continue
@@ -498,7 +523,7 @@ def run_bili_task(use_api_for_videos: bool = True):
                 print(f"视频《{video['title']}》总结已存在，跳过生成")
             else:
                 print("使用deepseek总结")
-                summary = deepseek_summary(subtitle,
+                summary = timed(f"B站-视频总结 {video['title'][:12]}", deepseek_summary, subtitle,
                     sysprompt=(
                         "你是一位资深财经内容分析师，专注从B站财经UP主的视频稿中提炼投资价值。\n\n"
                         "分析框架：\n"
@@ -949,14 +974,15 @@ def get_videos_by_api(up_id: str, page: int = 1, page_size: int = 10, max_retrie
                 bvid = video_data.get('bvid', '')
                 created_timestamp = video_data.get('created', 0)
                 
-                # 转换时间戳为日期字符串
-                created_date = datetime.fromtimestamp(created_timestamp).strftime('%Y-%m-%d %H:%M')
+                # 时间戳转精确时间：datetime 用于过滤判断（保留时刻精度），字符串仅用于展示/归档
+                created_dt = datetime.fromtimestamp(created_timestamp)
+                created_date = created_dt.strftime('%Y-%m-%d %H:%M')
                 
                 # 构建视频URL
                 video_url = f"https://www.bilibili.com/video/{bvid}"
                 
                 # 检查是否为限定小时内的视频（周末只收录周五收盘后发布的内容）
-                if is_within_limit_hours(created_date):
+                if is_within_limit_hours(created_dt):
                     videos.append({
                         "title": title,
                         "url": video_url,

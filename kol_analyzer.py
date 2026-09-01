@@ -19,6 +19,7 @@ from momentum_analyzer import run_position_relative_strength, format_relative_st
 from signal_knowledge_base import format_kb_summary_for_prompt, record_signals_from_analysis, update_signal_outcomes
 from advice_history import format_history_for_prompt, record_advice
 from deepseek_summary import deepseek_chat
+from stage_timer import stage, timed, timer, fmt_secs
 
 class KOLAnalyzer:
     """KOL分析器主类，用于执行各平台任务并合并投资建议"""
@@ -137,7 +138,8 @@ class KOLAnalyzer:
             print("没有可用的投资建议，跳过合并")
             return None
         
-        momentum_report, momentum_results = run_momentum_analysis(
+        momentum_report, momentum_results = timed(
+            "动量因子分析", run_momentum_analysis,
             bili_advice=bili_advice,
             wechat_advice=wechat_advice,
             weibo_advice=weibo_advice
@@ -164,21 +166,21 @@ class KOLAnalyzer:
             combined_content += f"=== 重点关注标的动量分析 ===\n{momentum_report}\n\n"
         
         # 加载回测命中率统计，动态调整博主权重
-        backtest_stats = load_latest_backtest_stats()
+        backtest_stats = timed("博主回测命中率加载", load_latest_backtest_stats)
         backtest_summary = format_backtest_summary_for_prompt(backtest_stats)
         if backtest_summary:
             combined_content += f"=== 博主历史预测命中率 ===\n{backtest_summary}\n\n"
             print("已注入博主回测命中率到合并prompt")
         
         # 生成昨日预测复盘
-        yesterday_review = generate_yesterday_review(self.current_date)
+        yesterday_review = timed("昨日预测复盘", generate_yesterday_review, self.current_date)
         if yesterday_review:
             combined_content += f"=== 昨日预测复盘 ===\n{yesterday_review}\n\n"
             print("已注入昨日预测复盘到合并prompt")
         
         # 市场宽度分析
         try:
-            market_breadth_report = run_market_breadth_analysis()
+            market_breadth_report = timed("市场宽度分析", run_market_breadth_analysis)
             if market_breadth_report:
                 combined_content += f"=== 市场宽度分析 ===\n{market_breadth_report}\n\n"
                 print("已注入市场宽度分析到合并prompt")
@@ -189,7 +191,7 @@ class KOLAnalyzer:
         
         # 持仓组合风险分析
         try:
-            risk_data = calculate_portfolio_risk()
+            risk_data = timed("持仓组合风险分析", calculate_portfolio_risk)
             if risk_data:
                 risk_report = format_portfolio_risk_report(risk_data)
                 combined_content += f"=== 持仓组合风险分析 ===\n{risk_report}\n\n"
@@ -200,7 +202,7 @@ class KOLAnalyzer:
         # 资金面分析（行业/概念资金流、个股资金流、持仓股资金流、两融余额）
         try:
             positions_for_fund = load_positions()
-            fund_flow_report = run_fund_flow_analysis(positions_for_fund)
+            fund_flow_report = timed("资金面分析", run_fund_flow_analysis, positions_for_fund)
             if fund_flow_report:
                 combined_content += f"=== 资金面分析（行业/概念/个股资金流+两融） ===\n{fund_flow_report}\n\n"
                 print("已注入资金面分析到合并prompt")
@@ -209,7 +211,7 @@ class KOLAnalyzer:
 
         # 板块放量监控（底部放量=机会，顶部放量=风险）
         try:
-            sector_report = run_sector_volume_analysis()
+            sector_report = timed("板块放量监控", run_sector_volume_analysis)
             if sector_report:
                 combined_content += f"=== 板块放量监控（底部放量机会 / 顶部放量风险） ===\n{sector_report}\n\n"
                 print("已注入板块放量监控到合并prompt")
@@ -222,9 +224,10 @@ class KOLAnalyzer:
 
         # 持仓股相对所属行业强弱（RS = 个股涨幅 - 行业涨幅）
         try:
-            f10_data_for_rs = fetch_position_f10_and_news()
+            # 注意：与 run_all_tasks 里的 F10 抓取重复，是主要可优化点之一
+            f10_data_for_rs = timed("持仓F10/新闻公告抓取", fetch_position_f10_and_news)
             if f10_data_for_rs:
-                rs_data = run_position_relative_strength(f10_data_for_rs)
+                rs_data = timed("持仓股相对行业强弱", run_position_relative_strength, f10_data_for_rs)
                 if rs_data and rs_data.get("results"):
                     rs_report = format_relative_strength_report(rs_data)
                     combined_content += f"=== 持仓股相对所属行业强弱 ===\n{rs_report}\n\n"
@@ -234,7 +237,8 @@ class KOLAnalyzer:
         
         # 信号-胜率知识库：先更新历史信号收益，再注入摘要
         try:
-            update_signal_outcomes()
+            with stage("知识库-回填历史信号收益"):
+                update_signal_outcomes()
             kb_summary = format_kb_summary_for_prompt()
             if kb_summary:
                 combined_content += f"=== 信号-胜率知识库 ===\n{kb_summary}\n\n"
@@ -244,7 +248,7 @@ class KOLAnalyzer:
         
         # 建议历史：注入过去N天观点，避免反复
         try:
-            history_text = format_history_for_prompt(days=7)
+            history_text = timed("建议历史加载(7天)", format_history_for_prompt, days=7)
             if history_text:
                 combined_content += f"=== 过去7天建议历史 ===\n{history_text}\n\n"
                 print("已注入建议历史到合并prompt")
@@ -275,7 +279,8 @@ class KOLAnalyzer:
                     "- 动量数据（权重10%）：客观技术面指标，用于验证或证伪上述主观判断\n\n"
                 )
             
-            merged_advice = deepseek_summary(
+            merged_advice = timed(
+                "DeepSeek 合并生成（含思考链）", deepseek_summary,
                 combined_content,
                 sysprompt=(
                     "你是首席投资策略官，拥有20年多资产配置经验，曾管理超百亿规模组合。"
@@ -378,7 +383,8 @@ class KOLAnalyzer:
                     "=== 以下为分析素材 ===\n\n"
                 ),
                 temperature=0.15,
-                max_tokens=20480
+                # 不覆盖 max_tokens：思考链(reasoning_tokens)与正文共用同一预算，
+                # 继承 MODEL_CONFIG 的 32768 给正文留足空间（20480 时曾被思考挤掉后半篇）
             )
             
             merged_advice_path = os.path.join(self.archive_folder, f"综合投资建议_{self.current_date}.txt")
@@ -396,18 +402,29 @@ class KOLAnalyzer:
             self._monitor_params_path = None
             try:
                 from generate_monitor_params import generate_monitor_params
-                monitor_file = generate_monitor_params(
+                monitor_file = timed(
+                    "盯盘参数生成", generate_monitor_params,
                     merged_advice, target_date, self.archive_folder, use_llm=False,
                     meta_extra={"generated_from": f"综合投资建议_{self.current_date}.txt"},
                 )
                 if monitor_file:
-                    self._monitor_params_path = monitor_file
-                    print(f"盯盘参数已生成: {monitor_file}")
+                    # 解析不到任何条件时不推送空参数（此前建议正文被截断曾导致 0 条 alerts 仍照推）
+                    try:
+                        with open(monitor_file, "r", encoding="utf-8") as mf:
+                            n_alerts = len(json.load(mf).get("alerts") or [])
+                    except Exception:
+                        n_alerts = -1
+                    if n_alerts == 0:
+                        print(f"⚠️ 盯盘参数解析到 0 条监控条件，跳过推送（请检查建议正文是否完整、价格警报清单是否存在）")
+                    else:
+                        self._monitor_params_path = monitor_file
+                        print(f"盯盘参数已生成: {monitor_file}（{n_alerts} 条条件）")
             except Exception as e:
                 print(f"生成盯盘参数失败（不影响主流程）: {e}")
             
             # 提取并保存综合投资建议的预测观点
-            record_predictions_from_advice(merged_advice, "merged", "综合分析", self.current_date, self.archive_folder)
+            timed("预测观点入库", record_predictions_from_advice,
+                  merged_advice, "merged", "综合分析", self.current_date, self.archive_folder)
             
             # 记录信号事件到知识库（用于长期胜率统计）
             try:
@@ -423,15 +440,16 @@ class KOLAnalyzer:
                 kol_preds = load_predictions(self.archive_folder)
                 
                 # 提取市场宽度数据（简化版，从报告文本无法还原，用None）
-                record_signals_from_analysis(
-                    momentum_results, kol_preds, None, advice_direction
-                )
+                with stage("知识库-记录信号事件"):
+                    record_signals_from_analysis(
+                        momentum_results, kol_preds, None, advice_direction
+                    )
             except Exception as e:
                 print(f"记录信号事件到知识库失败（不影响主流程）: {e}")
             
             # 记录当日建议到历史（用于多日连续性追踪）
             try:
-                record_advice(self.current_date, merged_advice)
+                timed("建议历史写入", record_advice, self.current_date, merged_advice)
             except Exception as e:
                 print(f"记录建议历史失败（不影响主流程）: {e}")
             
@@ -477,9 +495,10 @@ class KOLAnalyzer:
         print("\n" + "="*60)
         print(f"开始执行KOL分析任务 - {self.current_date}")
         print("="*60)
+        timer.reset()
         
         if not skip_login:
-            login_results = perform_unified_login()
+            login_results = timed("统一登录/凭据检查", perform_unified_login)
             print("\n>>> 登录状态检查完成，开始执行任务...")
         else:
             print("\n>>> 跳过统一登录流程，直接执行任务...")
@@ -487,25 +506,26 @@ class KOLAnalyzer:
         print("\n>>> 任务执行顺序: 微博 → 微信 → B站")
         
         try:
-            weibo_advice = self.run_weibo_task()
+            weibo_advice = timed("微博任务", self.run_weibo_task)
         except Exception as e:
             print(f"微博任务异常: {e}")
             weibo_advice = None
         
         try:
-            wechat_advice = self.run_wechat_task()
+            wechat_advice = timed("微信任务", self.run_wechat_task)
         except Exception as e:
             print(f"微信任务异常: {e}")
             wechat_advice = None
         
         try:
-            bili_advice = self.run_bili_task()
+            bili_advice = timed("B站任务", self.run_bili_task)
         except Exception as e:
             print(f"B站任务异常: {e}")
             bili_advice = None
         
         try:
-            merged_advice = self.merge_investment_advice(bili_advice, wechat_advice, weibo_advice)
+            merged_advice = timed("合并投资建议", self.merge_investment_advice,
+                                  bili_advice, wechat_advice, weibo_advice)
         except Exception as e:
             print(f"合并投资建议异常: {e}")
             merged_advice = None
@@ -522,7 +542,8 @@ class KOLAnalyzer:
             positions = load_positions()
             if positions["stocks"] or positions["indices"]:
                 try:
-                    position_result, match_result, match_report = run_position_analysis(
+                    position_result, match_result, match_report = timed(
+                        "持仓分析与KOL匹配", run_position_analysis,
                         bili_advice=bili_advice,
                         wechat_advice=wechat_advice,
                         weibo_advice=weibo_advice
@@ -594,7 +615,7 @@ class KOLAnalyzer:
 
                     # F10基本面与新闻公告
                     try:
-                        f10_data = fetch_position_f10_and_news()
+                        f10_data = timed("持仓F10/新闻公告抓取", fetch_position_f10_and_news)
                         if f10_data:
                             f10_report = format_position_f10_report(f10_data)
                             f10_report_path = os.path.join(self.archive_folder, f"持仓F10新闻公告_{self.current_date}.txt")
@@ -614,10 +635,10 @@ class KOLAnalyzer:
         # 推送综合投资建议到微信（PushPlus）
         try:
             if merged_advice:
-                ok, msg = push_to_wechat(
-                    f"KOL分析报告 {self.current_date}",
-                    merged_advice
-                )
+                ok, msg = timed("微信推送-综合建议", push_to_wechat,
+                                f"KOL分析报告 {self.current_date}",
+                                merged_advice
+                                )
                 if ok:
                     print(f"✓ 综合投资建议已推送到微信: {msg}")
                 else:
@@ -630,11 +651,11 @@ class KOLAnalyzer:
                     try:
                         with open(monitor_path, "r", encoding="utf-8") as f:
                             raw_json = f.read().strip()
-                        ok2, msg2 = push_to_wechat(
-                            f"盯盘参数 {self.current_date}（完整JSON）",
-                            raw_json,
-                            template="txt",
-                        )
+                        ok2, msg2 = timed("微信推送-盯盘参数", push_to_wechat,
+                                          f"盯盘参数 {self.current_date}（完整JSON）",
+                                          raw_json,
+                                          template="txt",
+                                          )
                         if ok2:
                             print(f"✓ 盯盘参数已推送到微信: {msg2}")
                         else:
@@ -647,6 +668,9 @@ class KOLAnalyzer:
                 print("无综合投资建议，跳过微信推送")
         except Exception as e:
             print(f"微信推送异常（不影响主流程）: {e}")
+
+        # 各阶段耗时汇总（按自身耗时排序，用于定位需要优化的慢阶段）
+        timer.report(f"各阶段耗时统计 - {self.current_date}")
 
         return {
             "bili_advice": bili_advice,

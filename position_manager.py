@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from momentum_analyzer import get_stock_kline, calculate_momentum_factors, get_index_kline
+from stage_timer import stage
 
 POSITION_FILE = "positions.json"
 
@@ -961,16 +962,22 @@ def fetch_position_f10_and_news():
 
     # 一次性获取全市场未来30天解禁，按持仓股过滤
     print("获取全市场限售解禁数据（一次性）...")
-    restricted_map = fetch_position_restricted_release(days=30)
+    with stage("持仓F10-限售解禁(一次性全市场)", group="持仓F10-数据抓取明细"):
+        restricted_map = fetch_position_restricted_release(days=30)
     if restricted_map:
         print(f"  全市场解禁数据获取成功，共 {len(restricted_map)} 只股票有待解禁")
 
     results = []
 
+    import re as _re
     for i, stock in enumerate(stocks):
         code = stock["code"]
         name = stock["name"]
-        print(f"[{i+1}/{len(stocks)}] 抓取 {name}({code})...")
+
+        # 跳过无效代码（如现金持仓 000000、空代码），避免对无效标的反复抓取失败
+        if not _re.fullmatch(r"\d{6}", str(code)):
+            print(f"[{i+1}/{len(stocks)}] 跳过无效代码 {name}({code})（非6位数字）")
+            continue
 
         entry = {
             "code": code,
@@ -982,25 +989,19 @@ def fetch_position_f10_and_news():
         }
 
         try:
-            entry["f10"] = fetch_stock_f10(code)
+            with stage(f"持仓F10-{name}({code})", group="持仓F10-数据抓取明细"):
+                entry["f10"] = fetch_stock_f10(code)
+                entry["news"] = fetch_stock_news(code, limit=5)
+                entry["announcements"] = fetch_stock_announcements(code, days=3)
         except Exception as e:
-            print(f"  F10抓取异常: {e}")
-
-        try:
-            entry["news"] = fetch_stock_news(code, limit=5)
-        except Exception as e:
-            print(f"  新闻抓取异常: {e}")
-
-        try:
-            entry["announcements"] = fetch_stock_announcements(code, days=3)
-        except Exception as e:
-            print(f"  公告抓取异常: {e}")
+            print(f"  F10/新闻/公告抓取异常: {e}")
 
         results.append(entry)
 
         # 限流：非最后一只股票时等待
         if i < len(stocks) - 1:
-            time.sleep(1.5)
+            with stage(f"持仓F10-限流等待 {name}", group="持仓F10-限流等待"):
+                time.sleep(1.5)
 
     print(f"F10与新闻公告抓取完成，共 {len(results)} 只")
     return results

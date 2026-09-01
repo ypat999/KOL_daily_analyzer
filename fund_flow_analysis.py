@@ -13,6 +13,8 @@
 import time
 from datetime import datetime, timedelta
 
+from stage_timer import stage
+
 try:
     import akshare as ak
     AKSHARE_AVAILABLE = True
@@ -236,12 +238,18 @@ def run_fund_flow_analysis(positions=None):
     """
     print("开始资金面分析...")
 
-    sector_flow = get_sector_fund_flow(top_n=8, flow_type="行业资金流")
-    concept_flow = get_sector_fund_flow(top_n=8, flow_type="概念资金流")
-    inflow_rank = get_individual_fund_flow_rank(top_n=10, direction="inflow")
-    outflow_rank = get_individual_fund_flow_rank(top_n=10, direction="outflow")
-    position_flow = get_position_stock_fund_flow(positions) if positions else None
-    margin = get_margin_balance(days=5)
+    with stage("资金面-行业资金流"):
+        sector_flow = get_sector_fund_flow(top_n=8, flow_type="行业资金流")
+    with stage("资金面-概念资金流"):
+        concept_flow = get_sector_fund_flow(top_n=8, flow_type="概念资金流")
+    with stage("资金面-个股流入榜"):
+        inflow_rank = get_individual_fund_flow_rank(top_n=10, direction="inflow")
+    with stage("资金面-个股流出榜"):
+        outflow_rank = get_individual_fund_flow_rank(top_n=10, direction="outflow")
+    with stage("资金面-持仓股资金流"):
+        position_flow = get_position_stock_fund_flow(positions) if positions else None
+    with stage("资金面-两融余额"):
+        margin = get_margin_balance(days=5)
 
     lines = []
     lines.append("=" * 60)

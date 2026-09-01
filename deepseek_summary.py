@@ -49,42 +49,74 @@ def deepseek_summary(subtitle,
                     thinking=None,
                     reasoning_effort=None,
                     response_format=None,
-                    stop=None):
+                    stop=None,
+                    max_continue_rounds=2):
     
     DEEPSEEK_API_KEY = load_api_key_from_file()
     client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
-    extra_body = {}
-
     thinking_config = thinking if thinking is not None else MODEL_CONFIG.get("thinking")
-    if thinking_config:
-        extra_body["thinking"] = thinking_config
+    effort = None if (thinking_config and thinking_config.get("type") == "disabled") \
+        else (reasoning_effort if reasoning_effort is not None else MODEL_CONFIG.get("reasoning_effort"))
 
-    if thinking_config and thinking_config.get("type") == "disabled":
-        pass
-    else:
-        effort = reasoning_effort if reasoning_effort is not None else MODEL_CONFIG.get("reasoning_effort")
-        if effort:
-            extra_body["reasoning_effort"] = effort
+    messages = [
+        {"role": "system", "content": sysprompt},
+        {"role": "user", "content": f"{userprompt}{subtitle}"}
+    ]
 
-    response = client.chat.completions.create(
-        model=model or MODEL_CONFIG["model"],
-        messages=[
-            {"role": "system", "content": sysprompt},
-            {"role": "user", "content": f"{userprompt}{subtitle}"}
-        ],
-        temperature=temperature if temperature is not None else MODEL_CONFIG["temperature"],
-        max_tokens=max_tokens or MODEL_CONFIG["max_tokens"],
-        top_p=top_p if top_p is not None else MODEL_CONFIG["top_p"],
-        frequency_penalty=MODEL_CONFIG["frequency_penalty"],
-        presence_penalty=MODEL_CONFIG["presence_penalty"],
-        stop=stop,
-        response_format=response_format if response_format is not None else MODEL_CONFIG.get("response_format"),
-        extra_body=extra_body if extra_body else None,
-        stream=False
-    )
+    def _call(msgs, think_cfg, reason_effort):
+        extra_body = {}
+        if think_cfg:
+            extra_body["thinking"] = think_cfg
+        if reason_effort:
+            extra_body["reasoning_effort"] = reason_effort
+        resp = client.chat.completions.create(
+            model=model or MODEL_CONFIG["model"],
+            messages=msgs,
+            temperature=temperature if temperature is not None else MODEL_CONFIG["temperature"],
+            max_tokens=max_tokens or MODEL_CONFIG["max_tokens"],
+            top_p=top_p if top_p is not None else MODEL_CONFIG["top_p"],
+            frequency_penalty=MODEL_CONFIG["frequency_penalty"],
+            presence_penalty=MODEL_CONFIG["presence_penalty"],
+            stop=stop,
+            response_format=response_format if response_format is not None else MODEL_CONFIG.get("response_format"),
+            extra_body=extra_body if extra_body else None,
+            stream=False
+        )
+        choice = resp.choices[0]
+        det = getattr(getattr(resp, "usage", None), "completion_tokens_details", None)
+        rt = getattr(det, "reasoning_tokens", None) if det else None
+        return (choice.message.content or ""), choice.finish_reason, getattr(resp, "usage", None), rt
 
-    return response.choices[0].message.content
+    content, finish_reason, usage, reasoning_tokens = _call(messages, thinking_config, effort)
+
+    # 输出触达长度上限时静默截断（finish_reason=length），thinking/reasoning 会占用大量
+    # 输出预算，导致正文写到一半就被砍。此处自动续写补齐剩余章节。
+    rounds = 0
+    while finish_reason == "length" and rounds < max_continue_rounds:
+        rounds += 1
+        comp = getattr(usage, "completion_tokens", "?") if usage else "?"
+        print(f"⚠️ 模型输出触达 max_tokens 被截断（第{rounds}次续写）：正文 {len(content)} 字符，"
+              f"completion_tokens={comp}（其中 reasoning_tokens={reasoning_tokens}）")
+        cont_messages = messages + [
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": (
+                "你的上一段输出因长度限制被截断。请严格紧接最后已输出的文字继续写完剩余章节，"
+                "禁止重复任何已输出内容，禁止重新起头或添加前言，直接从断点的下一个字开始写。"
+            )}
+        ]
+        # 续写关闭思考链，把输出预算全部留给正文，避免再次被推理占满
+        more, finish_reason, usage, reasoning_tokens = _call(cont_messages, {"type": "disabled"}, None)
+        if not more:
+            print("⚠️ 续写返回为空，停止续写")
+            break
+        content += more
+
+    if finish_reason == "length":
+        print(f"❌ 续写{rounds}次后仍被截断，正文不完整（{len(content)}字符）。"
+              f"请调高 max_tokens 或降低 reasoning_effort。")
+
+    return content
 
 
 def deepseek_chat(messages, model=None, temperature=None, max_tokens=None, stream=True):

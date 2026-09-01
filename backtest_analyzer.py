@@ -2,6 +2,7 @@ import os
 import re
 import json
 import time
+import threading
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -41,6 +42,11 @@ EVAL_HORIZON_DAYS = 5
 
 _last_request_time = 0
 _request_interval = 1.0
+
+# 实际表现结果缓存：key=(target_type, target, date_str, horizon) -> dict
+# 复盘阶段对同一标的反复查询时避免重复抓行情（新浪日K一次要好几秒）
+_PERF_CACHE = {}
+_PERF_CACHE_LOCK = threading.Lock()
 
 
 def _wait_for_rate_limit():
@@ -281,6 +287,7 @@ def extract_predictions_from_structured(content, blogger, channel):
 
 
 STOCK_CODE_MAP = {}
+_RESOLVE_CODE_LOCK = threading.Lock()  # 并发复盘时只允许一个线程抓全市场
 
 
 def _resolve_stock_code(target_name):
@@ -290,7 +297,10 @@ def _resolve_stock_code(target_name):
         return target_name
     if target_name in STOCK_CODE_MAP:
         return STOCK_CODE_MAP[target_name]
-    try:
+    with _RESOLVE_CODE_LOCK:
+        # 双重检查：等待锁期间其他线程可能已完成全市场抓取
+        if target_name in STOCK_CODE_MAP:
+            return STOCK_CODE_MAP[target_name]
         _wait_for_rate_limit()
         # 优先使用新浪实时行情（3次重试，应对 ConnectionError）
         df = None
@@ -305,17 +315,14 @@ def _resolve_stock_code(target_name):
                 continue
         if df is None or df.empty:
             return None
+        # 一次抓取构建全部 名称->代码 映射，后续标的直接命中，避免重复抓全市场
         for _, row in df.iterrows():
             name = str(row.get("名称", ""))
             code = str(row.get("代码", ""))
-            if name == target_name:
+            if name and code:
                 # 剥离可能带有的 sh/sz 前缀，确保纯6位数字
-                code = re.sub(r'^(sh|sz|SH|SZ)', '', code)
-                STOCK_CODE_MAP[target_name] = code
-                return code
-    except Exception:
-        pass
-    return None
+                STOCK_CODE_MAP[name] = re.sub(r'^(sh|sz|SH|SZ)', '', code)
+        return STOCK_CODE_MAP.get(target_name)
 
 
 INDEX_NAME_MAP = {
@@ -325,7 +332,24 @@ INDEX_NAME_MAP = {
 }
 
 
-def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_DAYS):
+def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_DAYS,
+                           use_cache=True, bypass_rate_limit=False):
+    """获取标的从预测日之后的实际表现
+
+    Args:
+        target: 标的名称或代码
+        target_type: index / stock / sector
+        date_str: 预测日期 'YYYY-MM-DD'
+        horizon: 评估周期（交易日）
+        use_cache: 命中进程内缓存直接返回（同一标的当日只抓一次行情）
+        bypass_rate_limit: 跳过全局 1s 限速锁（供复盘并发批量抓取使用）
+    """
+    cache_key = (target_type, target, date_str, horizon)
+    if use_cache:
+        with _PERF_CACHE_LOCK:
+            if cache_key in _PERF_CACHE:
+                return _PERF_CACHE[cache_key]
+
     try:
         pred_date = datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
@@ -338,7 +362,8 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
     end_str = end_date_dt.strftime("%Y%m%d")
 
     try:
-        _wait_for_rate_limit()
+        if not bypass_rate_limit:
+            _wait_for_rate_limit()
 
         if target_type == "index":
             code = INDEX_NAME_MAP.get(target, "")
@@ -420,12 +445,16 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
         max_return = round((max_price / open_price - 1) * 100, 2)
         min_return = round((min_price / open_price - 1) * 100, 2)
 
-        return {
+        result = {
             "return_pct": return_pct,
             "max_return": max_return,
             "min_return": min_return,
             "days_held": len(future_df),
         }
+        if use_cache:
+            with _PERF_CACHE_LOCK:
+                _PERF_CACHE[cache_key] = result
+        return result
 
     except Exception as e:
         print(f"  获取{target}实际数据失败: {e}")
