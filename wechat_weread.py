@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """微信读书桥接：用普通微信号抓取公众号文章（替代 mp 后台 appmsg 接口）
 
-原理：个人微信扫码登录"微信读书"（we-wrss 同款中转平台 weread.111965.xyz），
-平台按公众号解析（MP_WXS_xxx id）拉取文章列表，正文直接从 mp.weixin.qq.com/s/ 抓取。
-与 mp 后台的 appmsg freq control 完全隔离。
+原理：个人微信扫码登录"微信读书"web 端（weread_qq.com），官方接口
+/web/mp/articles 按公众号解析（MP_WXS_xxx id）拉取文章列表，
+正文直接从 mp.weixin.qq.com/s/ 抓取。与 mp 后台的 appmsg freq control 完全隔离。
+此前依赖的 wewe-rss 中转平台 weread.111965.xyz 已下线，不再使用。
+
+凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用。
+新公众号 mp id 需手动加入 weread_mpids.json（wxs2mp 解析接口已随平台下线）。
 
 配置文件 wechat_weread_accounts.json:
 {
@@ -11,7 +15,6 @@
     {"name": "公众号名", "example_link": "https://mp.weixin.qq.com/s/xxx"}
   ]
 }
-example_link 仅在首次解析 mp id 时使用（wxs2mp），解析结果缓存到 weread_mpids.json。
 """
 import json, os, re, sys, time, random
 import requests
@@ -20,9 +23,12 @@ from datetime import datetime
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from deepseek_summary import deepseek_summary
 from prediction_recorder import record_predictions_from_advice
+from stage_timer import stage, timed
 
-# wewe-rss 官方微信读书中转平台（加速域名已下线，用主域名）
-PLATFORM = "https://weread.111965.xyz"
+# 微信读书官方 web 端直连（替代 wewe-rss 中转平台，平台 weread.111965.xyz 已下线）
+# 凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用
+WEB_COOKIE_FILE = "weread_web_cookies.json"
+WEREAD_BASE = "https://weread.qq.com"
 
 # ===== 微信任务总开关（微信读书桥接版）=====
 # 新链路基于普通微信号+微信读书平台，与 mp 后台 appmsg 接口(freq control)完全隔离。
@@ -34,7 +40,7 @@ MPID_CACHE_FILE = "weread_mpids.json"   # 公众号名 -> mp id 缓存
 CONFIG_FILE = "wechat_weread_accounts.json"
 TIMEOUT = 30
 LIMIT_HOURS = 18  # 平时限定 18 小时（与 wechat_get.py 一致）
-# 每页文章数由平台返回（实测约50篇），只拉前几页即可覆盖当日文章
+# 每页 20 篇（官方接口固定），MAX_PAGES 覆盖当日文章即可
 MAX_PAGES = 2
 
 
@@ -62,148 +68,136 @@ def save_auth(auth):
 
 
 def _platform_request(method, path, headers=None, timeout=TIMEOUT, **kwargs):
-    url = f"{PLATFORM}{path}"
+    """微信读书官方接口请求（带 web 登录 cookie）"""
+    cookies = load_web_cookies()
+    if not cookies:
+        return None
+    jar = {c["name"]: c["value"] for c in cookies}
+    url = f"{WEREAD_BASE}{path}"
+    hdr = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "Referer": "https://weread.qq.com/",
+    }
+    if headers:
+        hdr.update(headers)
     try:
-        r = requests.request(method, url, timeout=timeout, headers=headers, **kwargs)
+        r = requests.request(method, url, timeout=timeout, headers=hdr, cookies=jar, **kwargs)
         return r
     except Exception as e:
-        print(f"  平台请求异常: {e}")
+        print(f"  微信读书请求异常: {e}")
         return None
+
+
+def load_web_cookies():
+    """读取微信读书 web 端登录 cookie（weread_web_login.py 扫码生成）"""
+    if not os.path.exists(WEB_COOKIE_FILE):
+        return None
+    with open(WEB_COOKIE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def login_weread():
-    """扫码登录微信读书，返回凭据。二维码保存为 weread_qr.png 并自动打开。"""
-    print("开始微信读书扫码登录...")
-    r = _platform_request("GET", "/api/v2/login/platform")
-    if r is None or r.status_code != 200:
-        print("获取登录二维码失败")
-        return None
-    data = r.json()
-    uid = data.get("uuid")
-    scan_url = data.get("scanUrl")
-    if not uid:
-        print(f"平台返回异常: {data}")
-        return None
+    """扫码登录微信读书 web 端（替代已下线的 wewe-rss 平台扫码）
 
-    data_url = scan_url or f"{PLATFORM}/login?uuid={uid}"
-    qr_file = None
+    调用 weread_web_login.py 弹出 Chrome 窗口扫码，成功后 cookie 保存到 weread_web_cookies.json。
+    """
+    print("开始微信读书 web 端扫码登录（弹出 Chrome 窗口，请用手机微信扫码）...")
     try:
-        import qrcode
-        qr = qrcode.QRCode(border=2, box_size=8)
-        qr.add_data(data_url)
-        qr.make(fit=True)
-        qr.make_image(fill_color="black", back_color="white").save("weread_qr.png")
-        qr_file = "weread_qr.png"
-        print(f"二维码已保存 weread_qr.png，请用手机微信扫码登录微信读书")
-    except Exception as e1:
-        # qrcode/Pillow 缺失（如 freethreaded 版 Python 无对应 wheel）时，
-        # 用纯 Python 的 segno 生成二维码图片（微信扫码页在桌面浏览器无法直接渲染）
-        try:
-            import segno
-            segno.make(data_url, error='L').save("weread_qr.png", scale=8, border=2)
-            qr_file = "weread_qr.png"
-            print(f"已用segno生成二维码 weread_qr.png（{str(e1)[:30]}），请用手机微信扫码登录微信读书")
-        except Exception as e2:
-            print(f"生成二维码图片失败({str(e2)[:60]})，请用手机微信扫一扫: {data_url}")
-    if qr_file and os.name == "nt":
-        os.startfile(qr_file)
-
-    for i in range(100):
-        time.sleep(3)
-        r = _platform_request("GET", f"/api/v2/login/platform/{uid}", timeout=120)
-        if r is None:
-            continue
-        try:
-            d = r.json()
-        except Exception:
-            continue
-        if d.get("token") and d.get("vid"):
-            auth = {"vid": d.get("vid"), "token": d.get("token"), "username": d.get("username")}
-            save_auth(auth)
-            print(f"登录成功: {auth.get('username')} (vid={auth.get('vid')})")
-            return auth
-        if i % 10 == 0:
-            print(f"  等待扫码... {d.get('message', '')}")
-    print("登录等待超时")
-    return None
+        import subprocess
+        subprocess.run([sys.executable, "weread_web_login.py"], check=True)
+    except Exception as e:
+        print(f"扫码登录流程异常: {e}")
+        return None
+    cookies = load_web_cookies()
+    if not cookies:
+        print("扫码登录后未获得凭据")
+        return None
+    vid = next((c.get("value", "") for c in cookies if c.get("name") == "wr_vid"), "")
+    username = next((c.get("value", "") for c in cookies if c.get("name") == "wr_skey"), "")[:6]
+    auth = {"vid": vid, "token": "", "username": username}
+    save_auth(auth)
+    print(f"登录成功 (vid={vid})")
+    return auth
 
 
 def get_mp_id(auth, account_name, example_link):
-    """用示例文章链接解析公众号 mp id（优先使用缓存）"""
-    # 查缓存
+    """公众号 mp id：优先使用 weread_mpids.json 缓存
+
+    平台 wxs2mp 解析接口已随中转平台下线；新公众号需手动把 id 加入 weread_mpids.json。
+    """
     cache = {}
     if os.path.exists(MPID_CACHE_FILE):
         with open(MPID_CACHE_FILE, "r", encoding="utf-8") as f:
             cache = json.load(f)
     if account_name in cache:
         return cache[account_name]
-
-    headers = {"xid": str(auth["vid"]), "Authorization": f"Bearer {auth['token']}"}
-    r = _platform_request("POST", "/api/v2/platform/wxs2mp", headers=headers, json={"url": example_link})
-    if r is None or r.status_code != 200:
-        print(f"  解析公众号失败: HTTP {r.status_code if r else 'None'}")
-        return None
-    try:
-        mps = r.json()
-        if isinstance(mps, dict):
-            mps = mps.get("data", [])
-    except Exception as e:
-        print(f"  解析响应异常: {e}")
-        return None
-    if not mps:
-        print(f"  未解析到公众号（示例链接可能失效）: {example_link}")
-        return None
-    mp = mps[0]
-    mp_id = mp.get("id")
-    cache[account_name] = mp_id
-    with open(MPID_CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
-    print(f"  公众号 {mp.get('name')} 解析成功: {mp_id}")
-    return mp_id
+    print(f"  {account_name} 无 mp id 缓存（wxs2mp 平台已下线），请手动补充 {MPID_CACHE_FILE}")
+    return None
 
 
-def get_mp_articles(auth, mp_id, page=1, max_retries=3):
+def get_mp_articles(auth, mp_id, page=1, max_retries=2):
     """拉取公众号文章列表 [{id, title, picUrl, publishTime}]
-    平台对连续请求有限流（HTTP 200 但 data 空），空结果自动重试
+
+    直连微信读书官方 web 接口 /web/mp/articles（cookie 认证，见 _platform_request）。
+    响应结构: reviews[].subReviews[].review.mpInfo -> {originalId, title, pic_url, time}
+    分页: offset = (page-1) * 20，每页最多 20 篇。
+    未登录/无 cookie 时返回 HTTP 200 + errCode(-2010)，须按 body 判断。
     """
-    headers = {"xid": str(auth["vid"]), "Authorization": f"Bearer {auth['token']}"}
+    offset = (page - 1) * 20
     for attempt in range(max_retries):
-        r = _platform_request("GET", f"/api/v2/platform/mps/{mp_id}/articles?page={page}", headers=headers)
+        r = _platform_request("GET", "/web/mp/articles",
+                              params={"bookId": mp_id, "offset": offset})
         if r is not None and r.status_code == 200:
             try:
-                arts = r.json()
-                if isinstance(arts, dict):
-                    arts = arts.get("data", [])
-                if isinstance(arts, list) and arts:
-                    return arts
+                data = r.json()
+                if data.get("errCode"):
+                    print(f"  接口返回错误: {data.get('errMsg', data.get('errCode'))}")
+                    return []
+                result = []
+                for rev in data.get("reviews") or []:
+                    for sub in rev.get("subReviews") or []:
+                        mp = (sub.get("review") or {}).get("mpInfo") or {}
+                        if not mp:
+                            continue
+                        result.append({
+                            "id": mp.get("originalId", ""),
+                            "title": mp.get("title", ""),
+                            "picUrl": mp.get("pic_url", ""),
+                            "publishTime": mp.get("time", rev.get("createTime", 0)),
+                        })
+                if result:
+                    return result
                 # 空结果：可能被限流，等待后重试
                 if attempt < max_retries - 1:
-                    print(f"    平台返回空列表（可能限流），{8*(attempt+1)}秒后重试({attempt+2}/{max_retries})...")
-                    time.sleep(8 * (attempt + 1))
+                    print(f"    返回空列表（可能限流），{5*(attempt+1)}秒后重试({attempt+2}/{max_retries})...")
+                    time.sleep(5 * (attempt + 1))
             except Exception as e:
                 print(f"  文章列表解析异常: {e}")
                 return []
         else:
-            if r is not None and r.status_code == 401:
-                print("  微信读书凭据已失效（HTTP 401），需重新扫码登录")
-                return []
+            # 网络层失败（None/非200）重试 1 次、短等待即可
             print(f"  拉取文章列表失败: HTTP {r.status_code if r else 'None'}")
             if attempt < max_retries - 1:
-                time.sleep(8 * (attempt + 1))
+                time.sleep(5 * (attempt + 1))
     return []
 
 
 def verify_auth(auth):
-    """校验微信读书登录凭据是否有效
+    """校验微信读书 web 登录 cookie 是否有效
+
+    /api/user/notify 在已登录时返回 {"success":1,...}；未登录返回 errCode。
 
     Returns:
-        bool: True 有效 / False token 失效 / None 网络异常无法判断
+        bool: True 有效 / False cookie 失效 / None 网络异常无法判断
     """
-    headers = {"xid": str(auth["vid"]), "Authorization": f"Bearer {auth['token']}"}
-    r = _platform_request("GET", "/api/v2/platform/mps/0/articles?page=1", headers=headers, timeout=15)
+    r = _platform_request("GET", "/api/user/notify", timeout=15)
     if r is None:
         return None
-    return r.status_code != 401
+    try:
+        return r.json().get("success") == 1
+    except Exception:
+        return False
 
 
 def is_today_article_ts(ts):
@@ -410,30 +404,35 @@ def run_wechat_task(generate_advice=True):
         if idx > 0:
             delay = random.uniform(5, 10)
             print(f"  账号间等待 {delay:.1f}秒...")
-            time.sleep(delay)
+            with stage(f"微信-账号间限流等待 {name}", group="微信-限流等待"):
+                time.sleep(delay)
         print(f"\n处理公众号: {name}")
         got = 0
         try:
-            mp_id = get_mp_id(auth, name, link)
+            mp_id = timed(f"微信-账号定位 {name}", get_mp_id, auth, name, link,
+                          group="微信-账号定位(bizid)")
             if not mp_id:
                 continue
             today_articles = []
             for page in range(1, MAX_PAGES + 1):
-                arts = get_mp_articles(auth, mp_id, page=page)
+                arts = timed(f"微信-文章列表 {name} p{page}", get_mp_articles, auth, mp_id, page=page,
+                             group="微信-文章列表翻页")
                 if not arts:
                     break
                 page_today = [a for a in arts if is_today_article_ts(a.get("publishTime", 0))]
                 today_articles.extend(page_today)
                 if len(page_today) < len(arts):
                     break  # 本页已含非今日文章，无需继续翻页
-                time.sleep(random.uniform(2, 4))
+                with stage(f"微信-翻页限流等待 {name}", group="微信-限流等待"):
+                    time.sleep(random.uniform(2, 4))
             got = len(today_articles)
             print(f"  {name} 获取到 {got} 篇限定时间内文章")
             for art in today_articles:
                 try:
                     url = f"https://mp.weixin.qq.com/s/{art.get('id')}"
                     print(f"    抓取正文: {art.get('title')}")
-                    content = fetch_article_content(url)
+                    content = timed(f"微信-正文 {art.get('title')[:12]}", fetch_article_content, url,
+                                    group="微信-正文抓取")
                     if content:
                         save_single_article(name, art, content, today)
                         total_saved += 1
@@ -450,12 +449,14 @@ def run_wechat_task(generate_advice=True):
     # 末轮重试：首轮因限流返回空的账号，等待后重新尝试
     if failed_accounts:
         print(f"\n首轮有 {len(failed_accounts)} 个账号未获取到文章，等待60秒后统一重试...")
-        time.sleep(60)
+        with stage("微信-重试轮等待60秒", group="微信-限流等待"):
+            time.sleep(60)
         for acc in failed_accounts:
             name = acc.get("name", "")
             link = acc.get("example_link", "")
             print(f"\n重试公众号: {name}")
-            time.sleep(random.uniform(5, 10))
+            with stage(f"微信-重试间隔等待 {name}", group="微信-限流等待"):
+                time.sleep(random.uniform(5, 10))
             try:
                 mp_id = get_mp_id(auth, name, link)
                 if not mp_id:
@@ -487,7 +488,8 @@ def run_wechat_task(generate_advice=True):
     if all_articles_content.strip():
         print(f"已收集文章内容，总长度：{len(all_articles_content)}字符")
         if generate_advice:
-            investment_advice = generate_investment_advice(all_articles_content, today)
+            investment_advice = timed("微信-投资建议LLM", generate_investment_advice,
+                                      all_articles_content, today, group="平台-投资建议LLM")
             print("投资分析建议生成完成！")
             return investment_advice
         print("跳过投资建议生成（generate_advice=False）")
