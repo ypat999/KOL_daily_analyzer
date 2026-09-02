@@ -2,7 +2,8 @@ import json
 import os
 import re
 from datetime import datetime, timedelta
-from deepseek_summary import deepseek_summary
+from deepseek_summary import deepseek_summary, FLASH_MODEL
+from market_symbols import normalize
 
 
 PREDICTION_FILENAME = "predictions_{channel}_{date}.json"
@@ -98,8 +99,21 @@ def generate_yesterday_review(current_date_str, base_dir="."):
             return (tt, t), get_actual_performance(t, tt, prev_date, horizon=1,
                                                    bypass_rate_limit=True)
         with ThreadPoolExecutor(max_workers=6) as ex:
-            for key, val in ex.map(_fetch, tasks):
+            futures = {ex.submit(_fetch, t): t for t in tasks}
+            done = 0
+            from concurrent.futures import as_completed
+            for fut in as_completed(futures):
+                done += 1
+                try:
+                    key, val = fut.result()
+                except Exception as e:
+                    print(f"  行情抓取异常: {e}")
+                    continue
                 perf_map[key] = val
+                _, t_ = key
+                ret_ = val["return_pct"] if val else None
+                print(f"  [行情 {done}/{len(tasks)}] {t_} → "
+                      f"{f'{ret_:+.2f}%' if ret_ is not None else '无数据'}")
 
     channel_label = {"bili": "B站", "weibo": "微博", "wechat": "微信", "merged": "综合"}
     
@@ -173,7 +187,9 @@ def generate_yesterday_review(current_date_str, base_dir="."):
         review_lines.append("  提示：请根据昨日预测对错情况，修正今日判断方向。")
     
     review_lines.append("=" * 60)
-    
+
+    print(f"昨日预测复盘完成: 已验证 {reviewed} 条 | 无数据 {no_data_count} 条")
+
     return "\n".join(review_lines)
 
 
@@ -203,6 +219,7 @@ def extract_predictions(content, channel, blogger, date_str):
         response_format={"type": "json_object"},
         temperature=0.05,
         max_tokens=4096,
+        model=FLASH_MODEL,  # 结构化提取为轻量任务，用 flash 降本提速
     )
 
     try:
@@ -215,6 +232,11 @@ def extract_predictions(content, channel, blogger, date_str):
                 pred["blogger"] = blogger
                 pred["date"] = date_str
                 pred["record_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # LLM 通常只给裸6位代码，统一规范化为带前缀存储（sh600519/sz399006…）
+                raw_code = pred.get("code", "")
+                if raw_code:
+                    tt = pred.get("target_type")
+                    pred["code"] = normalize(raw_code, tt if tt in ("index", "stock") else None) or raw_code
             return predictions
     except (json.JSONDecodeError, Exception) as e:
         print(f"  解析预测失败 [{blogger}]: {e}")

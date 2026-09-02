@@ -18,6 +18,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 from stage_timer import stage
+from market_symbols import sina_symbol, yf_symbol
 
 try:
     import akshare as ak
@@ -229,14 +230,13 @@ def get_index_ma_deviation():
     for code, name in indices:
         try:
             if AKSHARE_AVAILABLE:
-                df = ak.stock_zh_index_daily(symbol=f"sh{code}" if code.startswith("000") else f"sz{code}")
+                df = ak.stock_zh_index_daily(symbol=sina_symbol(code, "index"))
                 # 新浪返回英文列名，统一映射为中文
                 _col_map = {'date': '日期', 'open': '开盘', 'high': '最高',
                             'low': '最低', 'close': '收盘', 'volume': '成交量'}
                 df = df.rename(columns={k: v for k, v in _col_map.items() if k in df.columns})
             elif YFINANCE_AVAILABLE:
-                yf_code = f"{code}.SS" if code.startswith("000") else f"{code}.SZ"
-                df = yf.download(yf_code, period="6mo", progress=False)
+                df = yf.download(yf_symbol(code, "index"), period="6mo", progress=False)
                 df = df.rename(columns={"Close": "收盘", "Date": "日期"})
             else:
                 continue

@@ -2,21 +2,49 @@ import json
 import os
 from datetime import datetime
 from momentum_analyzer import get_stock_kline, calculate_momentum_factors, get_index_kline
+from market_symbols import normalize, strip_prefix
 from stage_timer import stage
 
 POSITION_FILE = "positions.json"
 
 def load_positions():
-    """加载持仓数据"""
+    """加载持仓数据
+
+    持仓 code 统一存规范代码（sh/sz 前缀，见 market_symbols）；
+    历史裸 6 位旧数据在读取时自动规范化并回写，之后消费端拿到的都是带前缀 code。
+    """
     if not os.path.exists(POSITION_FILE):
         return {"stocks": [], "indices": [], "last_update": None}
-    
+
     try:
         with open(POSITION_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            positions = json.load(f)
     except Exception as e:
         print(f"加载持仓数据失败: {e}")
         return {"stocks": [], "indices": [], "last_update": None}
+
+    def _normalize_record(rec, kind):
+        raw = str(rec.get("code", "") or "").strip()
+        if not raw or raw == "000000":  # 000000 为现金占位码，保持原样作哨兵
+            return False
+        c = normalize(raw, kind) or raw
+        if c != raw:
+            rec["code"] = c
+            return True
+        return False
+
+    changed = False
+    for rec in positions.get("stocks", []):
+        changed = _normalize_record(rec, "stock") or changed
+    for rec in positions.get("indices", []):
+        # index 持仓里可能混有 ETF(如 sh512880) 与真指数，用默认推断（5xx→sh、15/16/18→sz、399→sz 等规则一致）
+        changed = _normalize_record(rec, None) or changed
+    if changed:
+        try:
+            save_positions(positions)
+        except Exception:
+            pass
+    return positions
 
 def save_positions(positions):
     """保存持仓数据"""
@@ -34,12 +62,15 @@ def add_stock_position(code, name, shares, cost_price, account="default"):
     """添加股票持仓
     
     Args:
-        code: 股票代码 (如 "600519")
+        code: 股票代码（6位或带 sh/sz 前缀，如 "600519"/"sh600519"）
         name: 股票名称 (如 "贵州茅台")
         shares: 持仓股数
         cost_price: 成本价
         account: 账户名称 (如 "海通证券")
     """
+    code = normalize(code, "stock") or str(code or "").strip()
+    if strip_prefix(code) == "000000":
+        code = "000000"  # 现金占位码保持裸码哨兵，便于各处识别
     positions = load_positions()
     
     new_stock = {
@@ -53,7 +84,7 @@ def add_stock_position(code, name, shares, cost_price, account="default"):
     
     existing_idx = None
     for i, s in enumerate(positions["stocks"]):
-        if s["code"] == code and s["account"] == account:
+        if strip_prefix(s["code"]) == strip_prefix(code) and s["account"] == account:
             existing_idx = i
             break
     
@@ -68,6 +99,7 @@ def add_stock_position(code, name, shares, cost_price, account="default"):
 
 def add_index_position(code, name, shares, cost_price, account="default"):
     """添加指数/ETF持仓"""
+    code = normalize(code, None) or str(code or "").strip()
     positions = load_positions()
     
     new_index = {
@@ -81,7 +113,7 @@ def add_index_position(code, name, shares, cost_price, account="default"):
     
     existing_idx = None
     for i, s in enumerate(positions["indices"]):
-        if s["code"] == code and s["account"] == account:
+        if strip_prefix(s["code"]) == strip_prefix(code) and s["account"] == account:
             existing_idx = i
             break
     
@@ -100,7 +132,7 @@ def remove_position(code, account="default", is_index=False):
     key = "indices" if is_index else "stocks"
     
     for i, p in enumerate(positions[key]):
-        if p["code"] == code and p["account"] == account:
+        if strip_prefix(p["code"]) == strip_prefix(code) and p["account"] == account:
             removed = positions[key].pop(i)
             print(f"已删除: {removed['name']}({code})")
             return save_positions(positions)
@@ -455,8 +487,8 @@ def calculate_portfolio_risk(positions=None):
     # 2. 板块集中度（用代码前3位粗略分组，实际应查板块归属）
     sector_map = {}
     for s in stocks:
-        # 简化：用代码前3位作为板块代理
-        sector = s["code"][:3]
+        # 简化：用代码前3位作为板块代理（先剥掉 sh/sz 前缀取纯数字）
+        sector = (strip_prefix(s["code"]) or s["code"])[:3]
         sector_map.setdefault(sector, []).append(s["name"])
     sector_concentration = {
         sector: len(names) for sector, names in sector_map.items()
@@ -651,12 +683,13 @@ def fetch_stock_f10(code):
     整合公司概况 + 主要股东 + 财务摘要（最近4期）
     
     Args:
-        code: 股票代码（如 "600519"）
+        code: 股票代码（6位或带 sh/sz 前缀，如 "600519"/"sh600519"）
     
     Returns:
         dict 或 None: 包含 profile、shareholders、financials 三个子项
     """
     import akshare as ak
+    code = strip_prefix(code) or str(code or "").strip()
     
     result = {"profile": None, "shareholders": None, "financials": None}
     
@@ -746,12 +779,13 @@ def fetch_stock_news(code, limit=5):
     注意：yfinance 新闻为英文、主要覆盖大盘股；东财恢复后自动补充中文新闻。
 
     Args:
-        code: 股票代码
+        code: 股票代码（6位或带 sh/sz 前缀）
         limit: 返回条数上限
 
     Returns:
         list: 新闻列表，每条含 title/time/source/summary/link
     """
+    code = strip_prefix(code) or str(code or "").strip()
     # 方案1：yfinance 新闻（非东财源，东财接口不可用）
     try:
         import yfinance as yf
@@ -806,7 +840,7 @@ def fetch_stock_announcements(code, days=3):
     """抓取个股近期公告（巨潮资讯全市场公告按代码过滤）
     
     Args:
-        code: 股票代码
+        code: 股票代码（6位或带 sh/sz 前缀）
         days: 查询最近几天
     
     Returns:
@@ -814,6 +848,7 @@ def fetch_stock_announcements(code, days=3):
     """
     import akshare as ak
     from datetime import datetime, timedelta
+    code = strip_prefix(code) or str(code or "").strip()
     
     announcements = []
     today = datetime.now()
@@ -858,14 +893,25 @@ def fetch_position_restricted_release(days=30):
         days: 查询未来N天内的解禁
 
     Returns:
-        dict: {code: [{date, type, shares, actual_shares, market_value, ratio}, ...]}
+        dict: {code(规范代码): [{date, type, shares, actual_shares, market_value, ratio}, ...]}
     """
     from datetime import datetime, timedelta
 
     stocks = load_positions().get("stocks", [])
-    codes = [s.get("code", "") for s in stocks if s.get("code") and s.get("code") != "000000"]
-    if not codes:
+    # 现金/无效持仓直接过滤；解禁数据键用存储的规范代码，查询接口用裸6位
+    canon_by_bare = {}
+    for s in stocks:
+        raw = str(s.get("code", "") or "")
+        name = str(s.get("name", "") or "")
+        if not raw or "现金" in name:
+            continue
+        c6 = strip_prefix(raw) or raw
+        if not (c6.isdigit() and len(c6) == 6):
+            continue
+        canon_by_bare[c6] = normalize(raw, "stock") or raw
+    if not canon_by_bare:
         return {}
+    bare_codes = list(canon_by_bare)
 
     today = datetime.now()
     end = today + timedelta(days=days)
@@ -881,11 +927,11 @@ def fetch_position_restricted_release(days=30):
     restricted_map = {}
     try:
         import akshare as ak
-        for code in codes:
+        for c6 in bare_codes:
             df = None
             for attempt in range(3):
                 try:
-                    df = ak.stock_restricted_release_queue_sina(symbol=code)
+                    df = ak.stock_restricted_release_queue_sina(symbol=c6)
                     if df is not None and not df.empty:
                         break
                 except Exception:
@@ -894,12 +940,13 @@ def fetch_position_restricted_release(days=30):
                         time.sleep(1 + attempt)
             if df is None or df.empty:
                 continue
+            canon = canon_by_bare[c6]
             for _, row in df.iterrows():
                 date_str = str(row.get("解禁日期", ""))
                 if not _in_range(date_str):
                     continue
                 # 新浪单位：解禁数量(万股)、市值(亿元)，统一转成 股/元 与报告一致
-                restricted_map.setdefault(code, []).append({
+                restricted_map.setdefault(canon, []).append({
                     "date": date_str[:10],
                     "type": f"上市批次{row.get('上市批次', '')}",
                     "shares": (_safe_float(row.get("解禁数量")) or 0) * 1e4,
@@ -926,10 +973,11 @@ def fetch_position_restricted_release(days=30):
         # 按"股票代码"列分组，仅保留持仓股
         code_col = "股票代码" if "股票代码" in df.columns else df.columns[1]
         for _, row in df.iterrows():
-            code = str(row.get(code_col, "")).strip()
-            if code not in codes:
+            c6 = str(row.get(code_col, "")).strip()
+            canon = canon_by_bare.get(c6)
+            if not canon:
                 continue
-            restricted_map.setdefault(code, []).append({
+            restricted_map.setdefault(canon, []).append({
                 "date": str(row.get("解禁时间", ""))[:10],
                 "type": str(row.get("限售股类型", "")),
                 "shares": _safe_float(row.get("解禁数量")),
@@ -975,8 +1023,9 @@ def fetch_position_f10_and_news():
         name = stock["name"]
 
         # 跳过无效代码（如现金持仓 000000、空代码），避免对无效标的反复抓取失败
-        if not _re.fullmatch(r"\d{6}", str(code)):
-            print(f"[{i+1}/{len(stocks)}] 跳过无效代码 {name}({code})（非6位数字）")
+        code6 = strip_prefix(code) or str(code)
+        if not _re.fullmatch(r"\d{6}", code6) or code6 == "000000" or "现金" in str(name):
+            print(f"[{i+1}/{len(stocks)}] 跳过无效代码 {name}({code})")
             continue
 
         entry = {

@@ -15,6 +15,8 @@ from datetime import datetime, timedelta
 
 from stage_timer import stage
 
+from market_symbols import strip_prefix
+
 try:
     import akshare as ak
     AKSHARE_AVAILABLE = True
@@ -150,10 +152,12 @@ def get_position_stock_fund_flow(positions, days=5):
         if not code:
             continue
         # 跳过现金条目和非标准股票代码（如 000000 现金、02050 录入错误）
-        if code == "000000" or "现金" in name or len(code) != 6 or not code.isdigit():
+        # 持仓 code 为规范代码（sh/sz 前缀），先剥前缀再作 6 位校验
+        code6 = strip_prefix(code) or code
+        if code6 == "000000" or "现金" in name or len(code6) != 6 or not code6.isdigit():
             continue
         try:
-            df = ak.stock_individual_fund_flow(stock=code)
+            df = ak.stock_individual_fund_flow(stock=code6)
             if df is None or df.empty:
                 continue
             recent = df.tail(days)

@@ -10,9 +10,10 @@ import akshare as ak
 import pandas as pd
 import numpy as np
 
-from deepseek_summary import deepseek_summary
+from deepseek_summary import deepseek_summary, FLASH_MODEL
 from momentum_analyzer import parse_targets_from_text
 from prediction_recorder import load_predictions
+from market_symbols import sina_symbol
 
 
 BILI_UP_KEYWORDS = {
@@ -47,6 +48,18 @@ _request_interval = 1.0
 # 复盘阶段对同一标的反复查询时避免重复抓行情（新浪日K一次要好几秒）
 _PERF_CACHE = {}
 _PERF_CACHE_LOCK = threading.Lock()
+
+
+def _get_index_df_full(code):
+    """获取指数全量日K（已清洗：中文列/日期datetime/按日期升序）
+    底层走 index_kline 本地持久缓存：当日收盘后复用、跨日自动刷新，全进程只抓一次。
+    """
+    try:
+        from index_kline import get_kline_full
+        return get_kline_full(code)
+    except Exception as e:
+        print(f"  指数K线缓存异常: {e}")
+        return None
 
 
 def _wait_for_rate_limit():
@@ -134,6 +147,7 @@ def identify_bili_up_via_deepseek(content):
         response_format={"type": "json_object"},
         temperature=0.05,
         max_tokens=256,
+        model=FLASH_MODEL,  # UP主识别为轻量分类，用 flash
     )
     try:
         json_match = re.search(r'\{[\s\S]*\}', result_text)
@@ -245,6 +259,7 @@ def extract_predictions_from_text(content, blogger, channel):
         response_format={"type": "json_object"},
         temperature=0.05,
         max_tokens=4096,
+        model=FLASH_MODEL,  # 结构化提取为轻量任务，用 flash 降本提速
     )
 
     try:
@@ -325,10 +340,11 @@ def _resolve_stock_code(target_name):
         return STOCK_CODE_MAP.get(target_name)
 
 
+# 指数名称 -> 规范代码（带 sh/sz 前缀；HSI 恒生走 yfinance 无前缀）
 INDEX_NAME_MAP = {
-    "上证指数": "000001", "深证成指": "399001", "创业板指": "399006",
-    "科创50": "000688", "沪深300": "000300", "恒生指数": "HSI",
-    "上证": "000001", "深证": "399001", "创业板": "399006",
+    "上证指数": "sh000001", "深证成指": "sz399001", "创业板指": "sz399006",
+    "科创50": "sh000688", "沪深300": "sh000300", "恒生指数": "HSI",
+    "上证": "sh000001", "深证": "sz399001", "创业板": "sz399006",
 }
 
 
@@ -375,22 +391,9 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
             if not code:
                 return None
 
-            # 新浪数据源：代码需加sh/sz前缀（3次重试，应对SSL/Connection错误）
-            sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
-            df = None
-            for attempt in range(3):
-                try:
-                    df = ak.stock_zh_index_daily(symbol=sina_code)
-                    if df is not None and not df.empty:
-                        break
-                except Exception:
-                    if attempt < 2:
-                        time.sleep((attempt + 1) * 2)
-                    continue
-            df = _normalize_akshare_columns(df)
-            # 新浪返回全量数据，手动过滤日期范围（统一转Timestamp避免类型不一致）
-            if df is not None and len(df) > 0 and '日期' in df.columns:
-                df['日期'] = pd.to_datetime(df['日期'])
+            # 进程内缓存的全量K线（同指数只抓一次），按预测日切片
+            df = _get_index_df_full(code)
+            if df is not None:
                 start_ts = pd.Timestamp(start_date_dt)
                 end_ts = pd.Timestamp(end_date_dt)
                 df = df[(df['日期'] >= start_ts) & (df['日期'] <= end_ts)]
@@ -404,8 +407,10 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
                 return None
             # 剥离可能带有的 sh/sz 前缀（_resolve_stock_code 可能返回带前缀的代码）
             code = re.sub(r'^(sh|sz|SH|SZ)', '', code)
-            # 新浪数据源：代码需加sh/sz前缀（3次重试，应对SSL/Connection错误）
-            sina_code = f"sh{code}" if code.startswith("6") else f"sz{code}"
+            # 新浪 symbol 前缀走统一规则（沪深归属集中在 market_symbols，避免各模块写错）
+            sina_code = sina_symbol(code, "stock")
+            if sina_code is None:
+                return None
             df = None
             for attempt in range(3):
                 try:
@@ -430,7 +435,10 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
         pred_day = pd.Timestamp(pred_date)
         future_df = df[df['日期'] > pred_day].head(horizon)
 
-        if len(future_df) < 2:
+        # 收益 = 首根开盘买入 → 末根收盘卖出。horizon=1 只需 1 根（当日开盘→收盘）；
+        # horizon>=2 至少 2 根才有跨日收益。旧判定 len<2 令 horizon=1 恒返回 None，
+        # 导致复盘/回填的 1 日收益每次白抓行情后丢弃。
+        if len(future_df) < (1 if horizon == 1 else 2):
             return None
 
         open_price = float(future_df.iloc[0]['开盘'])

@@ -230,3 +230,4 @@ signal_kb.jsonl
 !wechat_weread_accounts.json
 weread_qr.png
 monitor_logs/
+data_cache/

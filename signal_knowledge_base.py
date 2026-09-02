@@ -10,7 +10,7 @@
         "date": "2025-06-18",
         "target": "创业板指",
         "target_type": "index",
-        "code": "399006",
+        "code": "sz399006",
         "signals": {
             "momentum": {"trend": "上涨", "breakout": "20日新高突破", "rsi": 65, "macd": "金叉"},
             "kol_consensus": {"bullish": 3, "bearish": 1, "neutral": 0, "consensus_direction": "bullish"},
@@ -34,6 +34,8 @@ import json
 import os
 from datetime import datetime, timedelta
 
+from market_symbols import normalize
+
 
 KB_FILE = "signal_kb.jsonl"
 
@@ -52,6 +54,7 @@ def record_signal_event(date_str, target, target_type, code, signals, advice_dir
     Returns:
         bool: 是否记录成功
     """
+    code = normalize(code, target_type if target_type in ("index", "stock") else None) or code
     event = {
         "date": date_str,
         "target": target,
@@ -102,63 +105,85 @@ def load_all_events():
 
 def update_signal_outcomes():
     """回填历史信号的实际收益
-    
+
     遍历所有未回填的信号事件，获取实际收益并更新。
-    
+    行情抓取走 backtest_analyzer（指数走本地持久缓存），每条事件最多查 1日+5日 两次。
+    逐条打印进度与耗时，便于观察（历史上曾无任何日志白跑 39 分钟）。
+
     Returns:
         int: 更新的事件数量
     """
     events = load_all_events()
     if not events:
         return 0
-    
+
     # 延迟导入避免循环依赖
     from backtest_analyzer import get_actual_performance
-    
+
+    import time as _tm
+    t_start = _tm.time()
+
+    def _days_since(dstr):
+        try:
+            return (datetime.now() - datetime.strptime(dstr, "%Y-%m-%d")).days
+        except Exception:
+            return 0
+
+    # 仅处理未回填且已过 1 天（否则 1d/5d 都算不了，无需抓行情）的标的类事件
+    pending = [e for e in events
+               if e.get("is_correct_5d") is None
+               and e.get("target") and e.get("target_type") in ("index", "stock")
+               and _days_since(e.get("date", "")) >= 1]
+    if not pending:
+        print("没有待回填的历史信号事件")
+        return 0
+    print(f"开始回填 {len(pending)} 条信号事件的实际收益（1日/5日）...")
+
     updated = 0
-    today = datetime.now().strftime("%Y-%m-%d")
-    
-    for event in events:
-        # 跳过已回填的
-        if event.get("is_correct_5d") is not None:
-            continue
-        
+    for i, event in enumerate(pending, 1):
         pred_date = event.get("date", "")
         target = event.get("target", "")
         target_type = event.get("target_type", "")
         code = event.get("code", "")
-        
-        if not target or target_type not in ("index", "stock"):
-            continue
-        
+
+        days_since = _days_since(pred_date)
+        r1 = r5 = None
+
         # 计算1日收益
-        days_since = (datetime.now() - datetime.strptime(pred_date, "%Y-%m-%d")).days
         if days_since >= 1:
             actual_1d = get_actual_performance(target, target_type, pred_date, horizon=1)
             if actual_1d:
                 event["actual_return_1d"] = actual_1d["return_pct"]
                 event["is_correct_1d"] = _check_correct(event["advice_direction"], actual_1d["return_pct"])
-        
+                r1 = actual_1d["return_pct"]
+
         # 计算5日收益
         if days_since >= 5:
             actual_5d = get_actual_performance(target, target_type, pred_date, horizon=5)
             if actual_5d:
                 event["actual_return_5d"] = actual_5d["return_pct"]
                 event["is_correct_5d"] = _check_correct(event["advice_direction"], actual_5d["return_pct"])
-        
+                r5 = actual_5d["return_pct"]
+
         if event["is_correct_1d"] is not None or event["is_correct_5d"] is not None:
             updated += 1
-    
+
+        print(f"  [{i}/{len(pending)}] {pred_date} {target_type}:{target}({code or '—'}) "
+              f"1d={f'{r1:+.2f}%' if r1 is not None else '—'} "
+              f"5d={f'{r5:+.2f}%' if r5 is not None else '—'}")
+
     # 重写文件
     if updated > 0:
         try:
             with open(KB_FILE, "w", encoding="utf-8") as f:
                 for event in events:
                     f.write(json.dumps(event, ensure_ascii=False) + "\n")
-            print(f"已更新 {updated} 条信号事件的实际收益")
+            print(f"已更新 {updated} 条信号事件的实际收益（总耗时 {_tm.time() - t_start:.0f}s）")
         except Exception as e:
             print(f"保存信号知识库失败: {e}")
-    
+    else:
+        print(f"没有可判定的收益结果（总耗时 {_tm.time() - t_start:.0f}s）")
+
     return updated
 
 

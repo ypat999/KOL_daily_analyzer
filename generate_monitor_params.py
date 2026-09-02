@@ -415,7 +415,7 @@ condition.type 只允许以下值及参数：
 def extract_with_llm(advice_text):
     """调用 DeepSeek 提炼条件"""
     try:
-        from deepseek_summary import deepseek_summary
+        from deepseek_summary import deepseek_summary, FLASH_MODEL
         result = deepseek_summary(
             advice_text,
             sysprompt=LLM_SCHEMA_PROMPT,
@@ -424,6 +424,7 @@ def extract_with_llm(advice_text):
             response_format={"type": "json_object"},
             temperature=0.05,
             max_tokens=8192,
+            model=FLASH_MODEL,  # 结构化条件提取为轻量任务，用 flash
         )
         m = re.search(r"\{[\s\S]*\}", result)
         if not m:
@@ -560,6 +561,25 @@ def _dedup(alerts):
     return out
 
 
+def _canonicalize_alerts(alerts):
+    """统一所有条件的 code 为规范代码（sh512880/sz399006…）。
+
+    规则解析（SYMBOL_TABLE/find_target 裸6位）与 LLM 提炼（schema 要求6位代码）
+    都会产出裸码，落盘前在这里统一加前缀，监控端无需再各自猜沪深归属。
+    """
+    from market_symbols import normalize
+
+    for a in alerts:
+        code = str(a.get("code") or "")
+        if not code:
+            continue
+        kind = a.get("kind")
+        c = normalize(code, kind if kind in ("index", "etf", "stock") else None) or code
+        if c != code:
+            a["code"] = c
+    return alerts
+
+
 def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=False,
                             out_path=None, meta_extra=None):
     """从综合投资建议生成盯盘参数 JSON
@@ -590,6 +610,8 @@ def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=Fals
             print(f"[LLM] 提炼到 {len(llm_alerts)} 条条件")
             alerts = alerts + llm_alerts
     alerts = _dedup(alerts)
+    # 落盘前统一 code 为规范代码（sh/sz 前缀），监控端不再各自判断沪深归属
+    alerts = _canonicalize_alerts(alerts)
 
     meta = {
         "date": date,

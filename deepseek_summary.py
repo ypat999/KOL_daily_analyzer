@@ -1,8 +1,12 @@
 
 from openai import OpenAI
 
+# 轻量/结构化任务用 flash（低成本、快），深度提炼分析用 pro（默认）
+FLASH_MODEL = "deepseek-v4-flash"
+PRO_MODEL = "deepseek-v4-pro"
+
 MODEL_CONFIG = {
-    "model": "deepseek-v4-pro",
+    "model": PRO_MODEL,
     "temperature": 0.2,
     "max_tokens": 32768,
     "top_p": 0.95,

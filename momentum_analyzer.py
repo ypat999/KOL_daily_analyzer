@@ -2,8 +2,10 @@ import json
 import re
 import time
 from datetime import datetime, timedelta
-from deepseek_summary import deepseek_summary
+from deepseek_summary import deepseek_summary, FLASH_MODEL
 from stage_timer import stage
+from market_symbols import (sina_symbol, normalize, strip_prefix,
+                            is_etf_code as _shared_is_etf)
 import pandas as pd
 import numpy as np
 from urllib3.exceptions import HTTPError
@@ -147,9 +149,11 @@ def parse_targets_from_text(text):
                         result['stocks'] = []
                     
                     for idx in result.get('indices', []):
+                        idx['code'] = normalize(idx.get('code', ''), 'index') or idx.get('code', '')
                         if 'reason' not in idx:
                             idx['reason'] = ''
                     for stock in result.get('stocks', []):
+                        stock['code'] = normalize(stock.get('code', ''), 'stock') or stock.get('code', '')
                         if 'reason' not in stock:
                             stock['reason'] = ''
                     
@@ -200,12 +204,17 @@ def extract_key_targets(investment_advice, source_name=""):
             thinking={"type": "disabled"},
             response_format={"type": "json_object"},
             temperature=0.05,
-            max_tokens=4096
+            max_tokens=4096,
+            model=FLASH_MODEL,  # 标的提取为结构化轻量任务，用 flash
         )
         
         json_match = re.search(r'\{[\s\S]*\}', result_text)
         if json_match:
             result = json.loads(json_match.group())
+            for idx in result.get('indices', []):
+                idx['code'] = normalize(idx.get('code', ''), 'index') or idx.get('code', '')
+            for stock in result.get('stocks', []):
+                stock['code'] = normalize(stock.get('code', ''), 'stock') or stock.get('code', '')
             if source_name:
                 print(f"[{source_name}] DeepSeek提取到 {len(result.get('indices', []))} 个指数, {len(result.get('stocks', []))} 只股票")
             return result
@@ -237,7 +246,8 @@ def merge_targets(all_targets):
             continue
             
         for idx in targets.get("indices", []):
-            code = idx.get("code", "")
+            # code 统一为规范代码（带前缀），避免后续模块各自猜 sh/sz
+            code = normalize(idx.get("code", ""), 'index') or idx.get("code", "")
             if code:
                 if code not in merged["indices"]:
                     merged["indices"][code] = {
@@ -249,7 +259,7 @@ def merge_targets(all_targets):
                     merged["indices"][code]["reasons"].append(idx.get("reason"))
         
         for stock in targets.get("stocks", []):
-            code = stock.get("code", "")
+            code = normalize(stock.get("code", ""), 'stock') or stock.get("code", "")
             if code:
                 if code not in merged["stocks"]:
                     merged["stocks"][code] = {
@@ -270,61 +280,37 @@ def merge_targets(all_targets):
 
 
 def _is_etf_code(code):
-    """判断代码是否为ETF代码"""
-    return code.startswith("5") or code.startswith("15")
+    """判断代码是否为ETF代码（沪深统一规则，见 market_symbols）"""
+    return _shared_is_etf(code)
 
 def get_index_kline(code, days=150, max_retries=3):
     """获取指数/ETF日K线数据（akshare/sina优先，yfinance备用）
 
     Args:
-        code: 指数或ETF代码
+        code: 指数或ETF代码（6位或带 sh/sz 前缀的规范代码）
         days: 获取的天数
         max_retries: 最大重试次数
 
     Returns:
         DataFrame: K线数据
     """
+    code = strip_prefix(code) or code  # 兼容规范代码(sh512880)入参
     is_etf = _is_etf_code(code)
 
-    # 优先使用 akshare（新浪数据源，国内稳定）
+    # 优先使用 akshare（新浪数据源，国内稳定），底层走 index_kline 本地持久缓存：
+    # 当日15:30后直接读盘复用，跨日/盘中才重抓全量（新浪无按日期的增量接口）
     if AKSHARE_AVAILABLE:
-        for attempt in range(max_retries):
-            try:
-                _wait_for_rate_limit()
-
-                end_date = datetime.now().strftime("%Y%m%d")
-                start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-
-                # 新浪数据源：代码需加sh/sz前缀
-                sina_code = f"sh{code}" if code.startswith("000") else f"sz{code}"
-                df = ak.stock_zh_index_daily(symbol=sina_code)
-
-                # 先统一列名，再过滤日期范围
-                df = _clean_akshare_df(df)
-                if df is not None and len(df) > 0 and '日期' in df.columns:
-                    start_ts = pd.Timestamp(start_date)
-                    end_ts = pd.Timestamp(end_date)
-                    df = df[(df['日期'] >= start_ts) & (df['日期'] <= end_ts)]
-
-                if df is not None and len(df) > 0:
-                    source_type = "ETF" if is_etf else "指数"
-                    print(f"akshare 获取{source_type} {code} 数据成功 ({len(df)}条)")
-                    return df
-
-                if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2
-                    print(f"akshare 获取指数 {code} 数据为空，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
-                    time.sleep(wait_time)
-            except Exception as e:
-                error_msg = str(e)
-                if 'Connection aborted' in error_msg or 'RemoteDisconnected' in error_msg:
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 2
-                        print(f"akshare 获取指数 {code} 连接失败，{wait_time}秒后重试 ({attempt + 1}/{max_retries})...")
-                        time.sleep(wait_time)
-                        continue
-                print(f"akshare 获取指数 {code} K线数据失败: {e}")
-                break
+        try:
+            from index_kline import get_kline_since
+            start_date = datetime.now() - timedelta(days=days)
+            df = get_kline_since(code, start_date=start_date.strftime("%Y-%m-%d"))
+            if df is not None and len(df) > 0:
+                source_type = "ETF" if is_etf else "指数"
+                print(f"akshare 获取{source_type} {code} 数据成功 ({len(df)}条)")
+                return df
+            print(f"akshare 获取指数 {code} 数据为空")
+        except Exception as e:
+            print(f"akshare 获取指数 {code} K线数据失败: {e}")
 
     # yfinance 备用（海外接口，偶发 database disk image is malformed）
     if YFINANCE_AVAILABLE:
@@ -363,13 +349,14 @@ def get_stock_kline(code, days=150, max_retries=3):
     """获取股票日K线数据（akshare/sina优先，yfinance备用）
 
     Args:
-        code: 股票代码
+        code: 股票代码（6位或带 sh/sz 前缀的规范代码）
         days: 获取的天数
         max_retries: 最大重试次数
 
     Returns:
         DataFrame: K线数据
     """
+    code = strip_prefix(code) or code  # 兼容规范代码(sh600519)入参
     # 跳过无效代码（现金持仓000000、非6位数字等）
     if not code or code == "000000" or len(code) != 6 or not code.isdigit():
         print(f"跳过无效股票代码: {code}")
@@ -384,8 +371,11 @@ def get_stock_kline(code, days=150, max_retries=3):
                 end_date = datetime.now().strftime("%Y%m%d")
                 start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
 
-                # 新浪数据源：代码需加sh/sz前缀
-                sina_code = f"sh{code}" if code.startswith("6") else f"sz{code}"
+                # 新浪 symbol 前缀走统一规则（market_symbols），北交所等不支持时转 yfinance
+                sina_code = sina_symbol(code, "stock")
+                if sina_code is None:
+                    print(f"新浪不支持代码 {code}，转 yfinance 备用")
+                    break
                 df = ak.stock_zh_a_daily(
                     symbol=sina_code,
                     start_date=start_date,
@@ -1500,12 +1490,14 @@ def run_position_relative_strength(position_f10_data, periods=(5, 20)):
         profile = f10.get("profile") if f10 else None
         industry = profile.get("industry", "") if profile else ""
 
-        # 跳过现金/无效代码
-        if not code or code == "000000" or "现金" in name:
+        # 跳过现金/无效代码（持仓 code 为规范代码，先剥 sh/sz 前缀再作 6 位校验）
+        if not code or "现金" in name:
             continue
+        code6 = strip_prefix(code) or code
         # 长度不为6或非数字（如 02050 录入错误）也跳过
-        if len(code) != 6 or not code.isdigit():
+        if code6 == "000000" or len(code6) != 6 or not code6.isdigit():
             continue
+        code = code6
 
         # 优先使用东财行业归属，避免巨潮行业名（如"农业"）与东财（如"种植业"）不一致
         em_industry = get_stock_industry_em(industry)

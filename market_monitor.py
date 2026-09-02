@@ -208,19 +208,15 @@ def in_window(now_dt, window):
 # ============================================================
 
 def normalize_code(code, kind):
-    """任意代码 → 新浪代码（sh/sz + 6位）"""
+    """任意代码 → 新浪代码（sh/sz + 6位）
+
+    沪深归属判断集中在 market_symbols（此处不再重复实现，避免 512880 等
+    再被误拼成 sz）；已带前缀直接可用，裸6位按 kind 规范化。
+    """
     if not code:
         return None
-    code = str(code).strip()
-    if re.fullmatch(r"(sh|sz)\d{6}", code):
-        return code
-    if not re.fullmatch(r"\d{6}", code):
-        return None
-    if kind == "index":
-        return ("sz" if code.startswith("399") else "sh") + code
-    if code.startswith(("5", "6")):
-        return "sh" + code
-    return "sz" + code
+    from market_symbols import normalize
+    return normalize(str(code).strip(), kind)
 
 
 def fetch_quotes(codes):
