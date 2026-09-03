@@ -320,8 +320,9 @@ def validate_weread_auth() -> tuple:
         auth = load_auth()
     except Exception as e:
         return False, f"读取微信读书凭据出错: {e}"
-    if not auth or not auth.get("vid") or not auth.get("token"):
-        return False, "微信读书凭据无效（缺少 vid/token）"
+    # 真实鉴权走 cookie（notify 接口）；老凭据文件 token 可能为空串，只看 vid
+    if not auth or not auth.get("vid"):
+        return False, "微信读书凭据无效（缺少 vid）"
     status = verify_auth(auth)
     if status is False:
         return False, "微信读书凭据已失效（token过期），需重新扫码登录"
@@ -458,7 +459,8 @@ def manual_login_weread() -> bool:
         return False
     try:
         auth = login_weread()
-        if auth and auth.get("vid") and auth.get("token"):
+        # 真伪最终由 notify 接口校验；vid 缺失才视为登录失败
+        if auth and auth.get("vid"):
             print("✓ 微信读书登录成功，凭据已保存")
             return True
         print("✗ 微信读书登录失败")

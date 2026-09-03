@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
 """微信读书桥接：用普通微信号抓取公众号文章（替代 mp 后台 appmsg 接口）
 
-原理：个人微信扫码登录"微信读书"web 端（weread_qq.com），官方接口
-/web/mp/articles 按公众号解析（MP_WXS_xxx id）拉取文章列表，
-正文直接从 mp.weixin.qq.com/s/ 抓取。与 mp 后台的 appmsg freq control 完全隔离。
+原理：个人微信扫码登录"微信读书"web 端（weread.qq.com），官方接口
+/web/mp/articles 按公众号 bookId（MP_WXS_xxx）拉取文章列表，
+正文优先用真实 Chrome 打开 mp.weixin.qq.com/s/ 抓取（网页优先，requests 兜底）。
+与 mp 后台的 appmsg freq control 完全隔离。
 此前依赖的 wewe-rss 中转平台 weread.111965.xyz 已下线，不再使用。
 
-凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用。
-新公众号 mp id 需手动加入 weread_mpids.json（wxs2mp 解析接口已随平台下线）。
+前置要求：
+- 待抓公众号必须先在该微信读书账号中「关注」（手机 App：书架 → 公众号 → 添加，
+  且该公众号须先在微信中关注过）。未关注时接口返回 -2041（无权限），
+  网页端同一接口同样失败，非登录/抓取方式问题，无法用浏览器绕过。
+- 凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用。
+- mp id：公众号名 → bookId（MP_WXS_xxx）缓存在 weread_mpids.json，需手动维护
+  （平台 wxs2mp 解析接口已下线，新公众号把 id 手动加入该文件）。
 
 配置文件 wechat_weread_accounts.json:
 {
@@ -15,6 +21,7 @@
     {"name": "公众号名", "example_link": "https://mp.weixin.qq.com/s/xxx"}
   ]
 }
+关注状态核对：python check_weread_follows.py（列出哪些账号仍未关注/可正常拉取）。
 """
 import json, os, re, sys, time, random
 import requests
@@ -42,6 +49,21 @@ TIMEOUT = 30
 LIMIT_HOURS = 18  # 平时限定 18 小时（与 wechat_get.py 一致）
 # 每页 20 篇（官方接口固定），MAX_PAGES 覆盖当日文章即可
 MAX_PAGES = 2
+
+# 进程内只自动重登一次（每次 run_wechat_task 开始重置），避免循环弹扫码窗
+_AUTO_RELOGINED = False
+# 已确认「未关注/无权限」(-2041) 的 mp_id 集合：本轮跳过该账号，不进重试轮（关注前重试无意义）
+_DENIED_MP_IDS = set()
+
+
+def _is_login_error(data):
+    """判断微信读书接口错误是否因登录失效（-2010 登录超时/未登录）。
+
+    -2041 为「公众号未关注/无权限」，非登录失效，由 get_mp_articles 单独处理。
+    """
+    code = data.get("errCode")
+    msg = str(data.get("errMsg", "") or "")
+    return code in (-2010,) or any(k in msg for k in ("登录", "超时", "未登录", "登录态"))
 
 
 def load_config():
@@ -114,8 +136,9 @@ def login_weread():
         print("扫码登录后未获得凭据")
         return None
     vid = next((c.get("value", "") for c in cookies if c.get("name") == "wr_vid"), "")
-    username = next((c.get("value", "") for c in cookies if c.get("name") == "wr_skey"), "")[:6]
-    auth = {"vid": vid, "token": "", "username": username}
+    # wr_skey 即微信读书 web 端凭据 token（wr_token 旧链路的等价物），校验逻辑依赖它非空
+    wr_skey = next((c.get("value", "") for c in cookies if c.get("name") == "wr_skey"), "")
+    auth = {"vid": vid, "token": wr_skey, "username": wr_skey[:6]}
     save_auth(auth)
     print(f"登录成功 (vid={vid})")
     return auth
@@ -144,6 +167,7 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
     分页: offset = (page-1) * 20，每页最多 20 篇。
     未登录/无 cookie 时返回 HTTP 200 + errCode(-2010)，须按 body 判断。
     """
+    global _AUTO_RELOGINED
     offset = (page - 1) * 20
     for attempt in range(max_retries):
         r = _platform_request("GET", "/web/mp/articles",
@@ -152,7 +176,26 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
             try:
                 data = r.json()
                 if data.get("errCode"):
-                    print(f"  接口返回错误: {data.get('errMsg', data.get('errCode'))}")
+                    err = data.get("errMsg") or data.get("errCode")
+                    # -2041：公众号文章接口无权限。实测同接口网页端亦 -2041——
+                    # 主因是「该公众号未被当前微信读书账号关注」(web 端无关注入口，
+                    # 需手机 App 书架→公众号→添加)。记录后跳过该账号继续下一家，
+                    # 不中断整轮；该账号不进重试轮（关注前重试无意义）。
+                    if data.get("errCode") == -2041:
+                        _DENIED_MP_IDS.add(mp_id)
+                        print("  接口返回错误: -2041（公众号未关注/无权限：需在微信读书 App "
+                              "关注「该公众号」后才能拉取，已跳过；如已关注仍报错再考虑频控）")
+                        return []
+                    # 登录中途失效（开头 verify_auth 通过、跑到一半 cookie 过期）：
+                    # 自动重新扫码登录一次，用新凭据重试当前页
+                    if _is_login_error(data) and not _AUTO_RELOGINED:
+                        _AUTO_RELOGINED = True
+                        print(f"  接口返回登录失效({err})，自动重新扫码登录一次...")
+                        login_weread()
+                        if load_web_cookies():
+                            print("  已更新登录凭据，重试当前请求...")
+                            continue
+                    print(f"  接口返回错误: {err}")
                     return []
                 result = []
                 for rev in data.get("reviews") or []:
@@ -216,7 +259,7 @@ def is_today_article_ts(ts):
 
 
 def fetch_article_content(url):
-    """从 mp.weixin.qq.com/s/ 抓取文章正文纯文本"""
+    """从 mp.weixin.qq.com/s/ 抓取文章正文纯文本（requests 兜底通道）"""
     try:
         time.sleep(random.uniform(2, 4))
         headers = {
@@ -245,6 +288,73 @@ def fetch_article_content(url):
     except Exception as e:
         print(f"  抓取正文异常: {e}")
         return None
+
+
+def _create_content_browser():
+    """创建抓正文用的真实 Chrome（复用 bili 反爬配置；懒加载避免拖慢纯 API 流程）"""
+    try:
+        from bili_summary import setup_browser
+        return setup_browser()
+    except Exception as e:
+        print(f"  创建浏览器失败: {e}")
+        return None
+
+
+def _fetch_article_content_web(url, driver):
+    """网页(浏览器)优先抓正文：真实 Chrome 打开 mp.weixin.qq.com/s/ 读 js_content。
+
+    返回 None 时由调用方回退 requests 通道（页面可能触发微信安全校验/验证码/无正文）。
+    """
+    import random as _random
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    try:
+        time.sleep(_random.uniform(2, 4))
+        driver.get(url)
+        try:
+            content_el = WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "#js_content")))
+        except Exception:
+            # 区分：微信安全校验页 vs 真无正文
+            try:
+                body_text = driver.find_element(By.TAG_NAME, "body").text[:200]
+            except Exception:
+                body_text = ""
+            if any(k in body_text for k in ("环境异常", "验证", "防骚扰", "去验证")):
+                print("  页面触发微信安全校验，改走 requests 兜底")
+            else:
+                print("  页面未渲染出正文节点 js_content")
+            return None
+        content = content_el.text.strip()
+        if len(content) < 20:
+            print("  网页正文过短，视为未渲染完整，改走 requests 兜底")
+            return None
+        return re.sub(r'\s+', ' ', content).strip()
+    except Exception as e:
+        print(f"  浏览器抓正文异常: {e}")
+        return None
+
+
+def save_single_article_content(account_name, art, today, driver=None, prefer_web=True):
+    """抓取单篇正文并落库（网页优先 → requests 兜底）。返回是否保存成功。"""
+    url = f"https://mp.weixin.qq.com/s/{art.get('id')}"
+    title = art.get('title', '无标题')
+    print(f"    抓取正文: {title}")
+    content = None
+    if prefer_web and driver is not None:
+        content = timed(f"微信-正文(网页) {str(title)[:12]}", _fetch_article_content_web, url, driver,
+                        group="微信-正文抓取")
+        if not content:
+            print(f"    网页方式未取到正文，requests 兜底")
+    if not content:
+        content = timed(f"微信-正文 {str(title)[:12]}", fetch_article_content, url,
+                        group="微信-正文抓取")
+    if content:
+        save_single_article(account_name, art, content, today)
+        return True
+    print(f"    正文获取失败: {title}")
+    return False
 
 
 def save_single_article(account_name, art, content, today):
@@ -359,8 +469,19 @@ def generate_investment_advice(all_content, today):
     return investment_advice
 
 
-def run_wechat_task(generate_advice=True):
-    """运行微信公众号文章分析任务（微信读书桥接版）"""
+def run_wechat_task(generate_advice=True, prefer_web_content=True):
+    """运行微信公众号文章分析任务（微信读书桥接版）
+
+    Args:
+        generate_advice: 是否生成投资建议
+        prefer_web_content: 正文抓取优先网页(真实Chrome)，requests 仅兜底。
+            说明：公众号文章列表接口(网页端与直连为同一 /web/mp/articles)，-2041 为
+            「未关注/无权限」的账号级错误，浏览器无法绕过，需先在微信读书 App 关注。
+    """
+    global _AUTO_RELOGINED
+    _AUTO_RELOGINED = False  # 每轮任务重置"已自动重登"标记
+    _DENIED_MP_IDS.clear()  # 每轮任务重置"未关注/无权限"记录（关注后重跑即可被清除）
+
     print("\n" + "=" * 50)
     print("开始执行微信公众号文章分析任务（微信读书桥接）")
     print("=" * 50)
@@ -394,6 +515,18 @@ def run_wechat_task(generate_advice=True):
     total_saved = 0
     random.shuffle(accounts)
     failed_accounts = []  # 首轮返回空（可能限流）的账号，末轮统一重试
+
+    driver = None  # 正文网页抓取复用浏览器（懒创建）
+
+    def ensure_driver():
+        """按需创建正文抓取浏览器，失败时正文自动全走 requests"""
+        nonlocal driver
+        if driver is None:
+            print("准备正文网页抓取浏览器...")
+            driver = _create_content_browser()
+            if driver is None:
+                print("浏览器创建失败，正文将全部走 requests 兜底")
+        return driver
 
     for idx, acc in enumerate(accounts):
         name = acc.get("name", "")
@@ -429,15 +562,11 @@ def run_wechat_task(generate_advice=True):
             print(f"  {name} 获取到 {got} 篇限定时间内文章")
             for art in today_articles:
                 try:
-                    url = f"https://mp.weixin.qq.com/s/{art.get('id')}"
-                    print(f"    抓取正文: {art.get('title')}")
-                    content = timed(f"微信-正文 {art.get('title')[:12]}", fetch_article_content, url,
-                                    group="微信-正文抓取")
-                    if content:
-                        save_single_article(name, art, content, today)
+                    if prefer_web_content:
+                        ensure_driver()
+                    if save_single_article_content(name, art, today, driver=driver,
+                                                   prefer_web=prefer_web_content):
                         total_saved += 1
-                    else:
-                        print(f"    正文获取失败: {art.get('title')}")
                 except Exception as e:
                     print(f"    处理文章异常: {e}")
                     continue
@@ -446,11 +575,13 @@ def run_wechat_task(generate_advice=True):
         if got == 0:
             failed_accounts.append(acc)
 
-    # 末轮重试：首轮因限流返回空的账号，等待后重新尝试
+    # 末轮重试：首轮未获取到文章的账号（-2041 未关注的已在 get_mp_articles 中记录并跳过）
     if failed_accounts:
         print(f"\n首轮有 {len(failed_accounts)} 个账号未获取到文章，等待60秒后统一重试...")
         with stage("微信-重试轮等待60秒", group="微信-限流等待"):
             time.sleep(60)
+        if prefer_web_content:
+            ensure_driver()
         for acc in failed_accounts:
             name = acc.get("name", "")
             link = acc.get("example_link", "")
@@ -461,19 +592,18 @@ def run_wechat_task(generate_advice=True):
                 mp_id = get_mp_id(auth, name, link)
                 if not mp_id:
                     continue
+                if mp_id in _DENIED_MP_IDS:
+                    print(f"  {name} 已确认为未关注(-2041)，跳过重试（请在微信读书 App 关注后再跑）")
+                    continue
                 got = 0
                 for page in range(1, MAX_PAGES + 1):
                     arts = get_mp_articles(auth, mp_id, page=page)
                     if not arts:
                         break
                     page_today = [a for a in arts if is_today_article_ts(a.get("publishTime", 0))]
-                    today_articles = page_today
-                    for art in today_articles:
-                        url = f"https://mp.weixin.qq.com/s/{art.get('id')}"
-                        print(f"    抓取正文: {art.get('title')}")
-                        content = fetch_article_content(url)
-                        if content:
-                            save_single_article(name, art, content, today)
+                    for art in page_today:
+                        if save_single_article_content(name, art, today, driver=driver,
+                                                       prefer_web=prefer_web_content):
                             total_saved += 1
                             got += 1
                     if len(page_today) < len(arts):
@@ -481,6 +611,13 @@ def run_wechat_task(generate_advice=True):
                 print(f"  {name} 重试后获取到 {got} 篇")
             except Exception as e:
                 print(f"  {name} 重试异常: {e}")
+
+    if driver is not None:
+        try:
+            driver.quit()
+            print("已关闭正文抓取浏览器")
+        except Exception:
+            pass
 
     print(f"\n共保存 {total_saved} 篇今日文章内容")
 
