@@ -26,9 +26,9 @@ account_list = {
     "MzU4OTg2NTY0OA%3D%3D": "路透财经早报",
     "MzE5ODk2NjUwOA%3D%3D": "猫笔刀",
     "Mzg4NzUxNjgyMQ%3D%3D": "章叔论市",
-    "Mzg4MzY5NDY4OA%3D%3D": "韭菜公社",
+    "Mzg4MzY5NDY4OA%3D%3D": "韭研公社",
     "MzAwNzA0MTkxOQ%3D%3D": "集思录",
-    "MzAwNjY4MjQwMA%3D%3D": "看懂龙头股"
+    "MzAwNjY4MjQwMA%3D%3D": "安静拆主线"
 }
 
 # 目标url
