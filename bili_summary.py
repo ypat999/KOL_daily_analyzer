@@ -405,12 +405,13 @@ def get_subtitle_url(bvid: str, driver_video=None) -> str:
         if should_quit:
             driver_video.quit()
 
-def run_bili_task(use_api_for_videos: bool = True):
+def run_bili_task(prefer_web: bool = True):
     """运行B站视频分析任务
 
     Args:
-        use_api_for_videos: 是否使用API方式获取视频列表，默认为True（API方式更稳定，
-            浏览器方式在部分Chrome版本上存在chromedriver崩溃问题）
+        prefer_web: 是否优先网页（浏览器）方式获取视频列表，默认 True。
+            理由：api.bilibili.com 空间投稿接口需要 wbi 签名且风控严格，
+            网页/浏览器方式更贴近真人访问、拿不到内容时自动回退 API 兜底。
     """
     pass
 
@@ -426,13 +427,13 @@ def run_bili_task(use_api_for_videos: bool = True):
     all_videos = []
     
     for attempt in range(1, max_retries + 1):
-        if use_api_for_videos:
-            print(f"使用API方式获取视频列表（第{attempt}次尝试）")
-            all_videos = timed("B站-视频列表(API)", get_videos_by_api_threaded, UP_MIDS,
+        if prefer_web:
+            print(f"使用网页（浏览器）方式获取视频列表（第{attempt}次尝试）")
+            all_videos = timed("B站-视频列表(网页)", get_videos_by_selenium_threaded, UP_MIDS,
                                max_workers=1, group="B站-视频列表获取")
         else:
-            print(f"使用浏览器方式获取视频列表（第{attempt}次尝试）")
-            all_videos = timed("B站-视频列表(浏览器)", get_videos_by_selenium_threaded, UP_MIDS,
+            print(f"使用API方式获取视频列表（第{attempt}次尝试）")
+            all_videos = timed("B站-视频列表(API)", get_videos_by_api_threaded, UP_MIDS,
                                max_workers=1, group="B站-视频列表获取")
         
         print(f"总共获取到 {len(all_videos)} 个视频")
@@ -451,13 +452,13 @@ def run_bili_task(use_api_for_videos: bool = True):
     # 当前方式连续失败时，自动切换另一种方式兜底重试一轮
     if not all_videos:
         print("\n当前方式未获取到视频，自动切换另一种方式兜底重试...")
-        if use_api_for_videos:
-            print("使用浏览器方式获取视频列表（兜底重试）")
-            all_videos = timed("B站-视频列表(浏览器兜底)", get_videos_by_selenium_threaded, UP_MIDS,
-                               max_workers=1, group="B站-视频列表获取")
-        else:
+        if prefer_web:
             print("使用API方式获取视频列表（兜底重试）")
             all_videos = timed("B站-视频列表(API兜底)", get_videos_by_api_threaded, UP_MIDS,
+                               max_workers=1, group="B站-视频列表获取")
+        else:
+            print("使用网页（浏览器）方式获取视频列表（兜底重试）")
+            all_videos = timed("B站-视频列表(网页兜底)", get_videos_by_selenium_threaded, UP_MIDS,
                                max_workers=1, group="B站-视频列表获取")
         print(f"兜底重试后总共获取到 {len(all_videos)} 个视频")
     
@@ -465,10 +466,10 @@ def run_bili_task(use_api_for_videos: bool = True):
         print("没有找到任何新视频，程序结束")
         return None
     
-    # 使用多线程并行获取所有视频的字幕URL（优先使用API方式）
-    print("开始使用多线程并行获取视频字幕URL（API方式）...")
+    # 使用多线程并行获取所有视频的字幕URL（优先网页/浏览器方式，API 兜底见 get_subtitle_urls_threaded）
+    print("开始使用多线程并行获取视频字幕URL（网页优先）...")
     subtitle_results = timed("B站-字幕URL获取(5线程)", get_subtitle_urls_threaded,
-                             all_videos, archive_folder, max_workers=5, use_api=True)
+                             all_videos, archive_folder, max_workers=5, prefer_web=True)
     print(f"成功获取到 {len(subtitle_results)} 个视频的字幕URL")
     
     # 处理获取到字幕的视频
@@ -805,14 +806,16 @@ def get_subtitle_url_via_api(bvid: str):
         return None
 
 # 改进的多线程版本：获取多个视频的字幕URL（支持API方式）
-def get_subtitle_urls_threaded(videos: list, archive_folder: str, max_workers: int = 3, use_api: bool = True):
-    """使用多线程并行获取多个视频的字幕URL，可选择使用API或浏览器方式
-    
+def get_subtitle_urls_threaded(videos: list, archive_folder: str, max_workers: int = 3, prefer_web: bool = True):
+    """使用多线程并行获取多个视频的字幕URL，默认网页(浏览器)方式优先
+
     Args:
         videos: 视频列表
         archive_folder: 归档文件夹路径
         max_workers: 最大线程数
-        use_api: 是否使用API方式
+        prefer_web: 是否优先网页(浏览器)方式，默认 True。wbi/player 字幕接口
+            风控严、需签名，网页方式在真实浏览器内点击字幕按钮抓包更稳；
+            网页拿不到字幕时自动回退 yt-dlp+whisper 语音识别。
     """
     subtitle_results = []
     
@@ -838,8 +841,12 @@ def get_subtitle_urls_threaded(videos: list, archive_folder: str, max_workers: i
                 print(f'警告：未从URL中提取到BVID，URL：{url}')
                 return None
             
-            if use_api:
-                # 使用API方式获取字幕URL
+            if prefer_web:
+                # 网页(浏览器)方式：走模块级 get_subtitle_url_browser_fallback，
+                # 该函数内部含完整回退链（登录失败/无字幕/异常 → yt-dlp+whisper）
+                return get_subtitle_url_browser_fallback(bvid, video, archive_folder)
+            else:
+                # API 方式
                 subtitle_url = get_subtitle_url_via_api(bvid)
                 if subtitle_url:
                     print(f"视频《{video['title']}》API字幕URL获取成功")
@@ -851,46 +858,9 @@ def get_subtitle_urls_threaded(videos: list, archive_folder: str, max_workers: i
                     print(f"视频《{video['title']}》API方式无字幕，尝试使用ytdlp+whisper方式")
                     # API方式失败时回退到yt-dlp+whisper方式
                     return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
-            else:
-                # 使用浏览器方式获取字幕URL
-                return get_subtitle_url_browser_fallback(bvid, video, archive_folder)
                 
         except Exception as e:
             print(f"视频《{video['title']}》字幕URL获取失败：{str(e)}")
-            return None
-    
-    def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str):
-        """浏览器方式获取字幕URL（备用方案）
-        
-        Args:
-            bvid: 视频BV号
-            video: 视频信息字典
-            archive_folder: 归档文件夹路径
-        """
-        try:
-            # 创建独立的浏览器实例
-            driver = setup_browser()
-            logged_in = login_and_save_cookie(driver)
-            
-            if not logged_in:
-                print(f"视频 {video['title']} 登录失败")
-                driver.quit()
-                return None
-            
-            subtitle_url = get_subtitle_url(bvid, driver)
-            driver.quit()
-            
-            if subtitle_url:
-                print(f"视频《{video['title']}》浏览器字幕URL获取成功")
-                return {
-                    'video': video,
-                    'subtitle_url': subtitle_url
-                }
-            else:
-                print(f"视频《{video['title']}》无字幕")
-                return None
-        except Exception as e:
-            print(f"视频《{video['title']}》浏览器方式获取字幕失败：{str(e)}")
             return None
     
     # 使用线程池并行处理
