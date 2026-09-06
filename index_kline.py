@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
-"""指数/ETF 全量日K 本地持久缓存（新浪 stock_zh_index_daily）
+"""指数/个股/ETF 全量日K 本地持久缓存（新浪 index-daily / a-daily）
 
-背景：新浪该接口不支持按日期区间查询，每次请求都返回全量历史（数千行）。
-此前回填/复盘对同一指数跨多个预测日查询时反复全量下载，是"39分钟/16分钟"
-长耗时的主因之一。
+背景：新浪接口均不支持服务端按日期增量，个股接口的 start/end 参数只是客户端切片，
+实际每次请求都回传全量历史（数千行）。此前回填/复盘对同一标的跨多个预测日/多个周期
+反复全量下载（每条事件最多 2 次），是"39分钟"长耗时的主因。
 
 策略：
 - 落盘缓存到 data_cache/kline/{code}.csv，记录抓取日期（_meta.json）；
 - 当日 15:30 收盘后复用本地文件（同日内多次运行/多次查询不再重抓）；
 - 盘中或跨日首次使用 → 重新抓取全量覆盖文件（新浪无增量接口，只能全量刷新，
-  单次约 1-3 秒）；
+  单次约 1-4 秒；跨日运行只对当日新增出现的代码刷新 → 增量成本极小）；
 - 进程内再叠一层内存缓存，杜绝同进程内重复抓取。
 
-本模块同时服务 momentum_analyzer（盘后强弱）与 backtest_analyzer（收益回填/复盘）。
+个股按代码与日期前复权(qfq)抓取并落盘缓存，指数/ETF 走 index-daily 原始价。
+本模块同时服务 momentum_analyzer（盘后强弱）、backtest_analyzer（收益回填/复盘）。
 """
 import json
 import os
@@ -96,14 +97,18 @@ def _can_reuse_local(meta_code):
     return (t.hour, t.minute) >= REUSE_AFTER
 
 
-def get_kline_full(code, force_refresh=False):
-    """返回指数/ETF 全量日K df（中文列、日期datetime、按日期升序），失败返回 None
+def get_kline_full(code, kind=None, force_refresh=False):
+    """返回 指数/个股/ETF 全量日K df（中文列、日期datetime、按日期升序），失败返回 None
 
-    code 参数：6位数字或带前缀规范代码(sh512880/sz399001)均可；缓存 key 统一用 6 位。
+    code 参数：6位数字或带前缀规范代码(sh512880/sz399001/sh600519)均可；缓存 key 统一用 6 位。
+    kind: index / stock / etf（纯数字 ETF 缺省自动判为 etf；个股须显式传 stock，
+          因 000001 等指数/股票歧义代码无法从数字判定）。个股走新浪 a-daily(qfq)，
+          指数/ETF 走 index-daily；两者响应列同构，落盘同一缓存目录。
     HSI 等新浪不支持的代码返回 None（调用方自行走 yfinance）。
     """
     code = strip_prefix(code) or str(code)  # 兼容 sh512880 等规范代码入参
-    sina = sina_symbol(code, "etf" if is_etf_code(code) else "index")
+    kind = (kind or ("etf" if is_etf_code(code) else "index")).lower()
+    sina = sina_symbol(code, kind)
     if sina is None or not AKSHARE_AVAILABLE:
         return None
 
@@ -124,11 +129,27 @@ def get_kline_full(code, force_refresh=False):
             pass  # 文件损坏则重新抓取
 
     # 盘中或跨日：重新抓全量覆盖
+    def _fetch():
+        if kind == "stock":
+            # 个股：新浪 a-daily，前复权优先（ETF/个别失败回退不复权）
+            for adj in ("qfq", ""):
+                try:
+                    df = _clean(ak.stock_zh_a_daily(symbol=sina, adjust=adj))
+                    if df is not None:
+                        return df
+                except Exception:
+                    continue
+            return None
+        try:
+            return _clean(ak.stock_zh_index_daily(symbol=sina))
+        except Exception:
+            return None
+
     df = None
     for attempt in range(MAX_RETRIES):
         try:
             _wait_for_rate_limit()
-            df = _clean(ak.stock_zh_index_daily(symbol=sina))
+            df = _fetch()
             if df is not None:
                 break
         except Exception:
@@ -136,7 +157,7 @@ def get_kline_full(code, force_refresh=False):
                 time.sleep((attempt + 1) * 2)
             continue
     if df is None:
-        print(f"  指数K线 {sina} 抓取失败({MAX_RETRIES}次重试)")
+        print(f"  K线 {sina}({kind}) 抓取失败({MAX_RETRIES}次重试)")
         return None
 
     os.makedirs(CACHE_DIR, exist_ok=True)

@@ -13,7 +13,7 @@ import numpy as np
 from deepseek_summary import deepseek_summary, FLASH_MODEL
 from momentum_analyzer import parse_targets_from_text
 from prediction_recorder import load_predictions
-from market_symbols import sina_symbol
+from market_symbols import is_etf_code
 
 
 BILI_UP_KEYWORDS = {
@@ -374,13 +374,10 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
     end_date_dt = pred_date + timedelta(days=horizon + 5)
     start_date_dt = pred_date + timedelta(days=1)
 
-    start_str = start_date_dt.strftime("%Y%m%d")
-    end_str = end_date_dt.strftime("%Y%m%d")
-
     try:
-        if not bypass_rate_limit:
-            _wait_for_rate_limit()
-
+        # 注意：不再在此处做无条件 1s 限速——行情抓取统一走 index_kline 持久缓存，
+        # 其内部只在真正联网刷新时限速；否则缓存命中也被每事件拖慢 1 秒
+        # （曾造成回填 1000+ 事件被无谓串行 ~33 分钟）。
         if target_type == "index":
             code = INDEX_NAME_MAP.get(target, "")
             if not code:
@@ -407,21 +404,11 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
                 return None
             # 剥离可能带有的 sh/sz 前缀（_resolve_stock_code 可能返回带前缀的代码）
             code = re.sub(r'^(sh|sz|SH|SZ)', '', code)
-            # 新浪 symbol 前缀走统一规则（沪深归属集中在 market_symbols，避免各模块写错）
-            sina_code = sina_symbol(code, "stock")
-            if sina_code is None:
-                return None
-            df = None
-            for attempt in range(3):
-                try:
-                    df = ak.stock_zh_a_daily(symbol=sina_code, start_date=start_str,
-                                             end_date=end_str, adjust="qfq")
-                    if df is not None and not df.empty:
-                        break
-                except Exception:
-                    if attempt < 2:
-                        time.sleep((attempt + 1) * 2)
-                    continue
+            # 全量日K走本地持久缓存（index_kline 覆盖个股/ETF：当日收盘后复用文件、
+            # 跨日只对新增代码刷新；同代码跨预测日/跨周期共享一次抓取 → 回填由逐事件
+            # 全量重下变为每日增量，39分钟级耗时降到秒级）
+            from index_kline import get_kline_full as _kline_full
+            df = _kline_full(code, kind="etf" if is_etf_code(code) else "stock")
             df = _normalize_akshare_columns(df)
         else:
             return None
