@@ -320,7 +320,8 @@ def validate_weread_auth() -> tuple:
         auth = load_auth()
     except Exception as e:
         return False, f"读取微信读书凭据出错: {e}"
-    # 真实鉴权走 cookie（notify 接口）；老凭据文件 token 可能为空串，只看 vid
+    # 真实鉴权走与抓取同源同强度的 /web/mp/articles 接口（严格校验 wr_skey）；
+    # 老凭据文件 token 可能为空串，只看 vid
     if not auth or not auth.get("vid"):
         return False, "微信读书凭据无效（缺少 vid）"
     status = verify_auth(auth)

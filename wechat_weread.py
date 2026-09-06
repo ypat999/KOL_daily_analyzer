@@ -9,8 +9,11 @@
 
 前置要求：
 - 待抓公众号必须先在该微信读书账号中「关注」（手机 App：书架 → 公众号 → 添加，
-  且该公众号须先在微信中关注过）。未关注时接口返回 -2041（无权限），
+  且该公众号须先在微信中关注过）。未订阅时文章接口返回 -2041（无权限），
   网页端同一接口同样失败，非登录/抓取方式问题，无法用浏览器绕过。
+- -2041 的另一种情形：bookId 已在书架仍短暂返回 -2041，属瞬时风控
+  （集中请求/登录风暴后触发，静置可自动恢复）——程序按书架订阅列表区分这两种情况，
+  未订阅才跳过，已订阅则等待退避重试。
 - 凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用。
 - mp id：公众号名 → bookId（MP_WXS_xxx）缓存在 weread_mpids.json，需手动维护
   （平台 wxs2mp 解析接口已下线，新公众号把 id 手动加入该文件）。
@@ -177,14 +180,21 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
                 data = r.json()
                 if data.get("errCode"):
                     err = data.get("errMsg") or data.get("errCode")
-                    # -2041：公众号文章接口无权限。实测同接口网页端亦 -2041——
-                    # 主因是「该公众号未被当前微信读书账号关注」(web 端无关注入口，
-                    # 需手机 App 书架→公众号→添加)。记录后跳过该账号继续下一家，
-                    # 不中断整轮；该账号不进重试轮（关注前重试无意义）。
+                    # -2041：文章接口无权限，两种成因——
+                    #  a) bookId 不在书架：公众号真未订阅（web 端无关注入口，需手机 App 添加），跳过
+                    #  b) bookId 已订阅仍 -2041：瞬时风控（登录风暴/集中请求后触发，静置可恢复），退避重试
+                    # 以书架订阅列表区分，避免把已订阅号误判为"永久未关注"而整轮跳过。
                     if data.get("errCode") == -2041:
-                        _DENIED_MP_IDS.add(mp_id)
-                        print("  接口返回错误: -2041（公众号未关注/无权限：需在微信读书 App "
-                              "关注「该公众号」后才能拉取，已跳过；如已关注仍报错再考虑频控）")
+                        if _is_unsubscribed(mp_id):
+                            _DENIED_MP_IDS.add(mp_id)
+                            print("  接口返回错误: -2041（该公众号未在微信读书书架中订阅/收录："
+                                  "请先在微信读书 App 关注；核对: python check_weread_follows.py）")
+                            return []
+                        print(f"  接口返回错误: -2041（已订阅仍限频），{20 * (attempt + 1)}秒后重试"
+                              f"({attempt + 2}/{max_retries})...")
+                        if attempt < max_retries - 1:
+                            time.sleep(20 * (attempt + 1))
+                            continue
                         return []
                     # 登录中途失效（开头 verify_auth 通过、跑到一半 cookie 过期）：
                     # 自动重新扫码登录一次，用新凭据重试当前页
@@ -226,14 +236,82 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
     return []
 
 
+def _pick_probe_mp_id():
+    """取任一已配置公众号 bookId 用于启动鉴权探测（严格校验需要真实公众号请求）"""
+    try:
+        if os.path.exists(MPID_CACHE_FILE):
+            with open(MPID_CACHE_FILE, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            for v in cache.values():
+                if isinstance(v, str) and v.startswith("MP_"):
+                    return v
+    except Exception:
+        pass
+    return None
+
+
+# 书架公众号订阅缓存：{ts, ids}，区分 -2041 是「真未订阅」还是「已订阅但瞬时风控」
+_SUBSCRIBED_CACHE = {"ts": 0.0, "ids": None}
+
+
+def _fetch_subscribed_mp_ids():
+    """拉取当前账号书架中的公众号订阅 bookId 集合（/web/shelf/sync，type=3），300秒缓存"""
+    now = time.time()
+    cache = _SUBSCRIBED_CACHE
+    if cache["ids"] is not None and now - cache["ts"] < 300:
+        return cache["ids"]
+    ids = None
+    try:
+        r = _platform_request("GET", "/web/shelf/sync",
+                              params={"synckey": 0, "listType": 1}, timeout=15)
+        if r is not None and r.status_code == 200:
+            d = r.json()
+            ids = {b.get("bookId") for b in (d.get("books") or []) if b.get("type") == 3}
+    except Exception:
+        pass
+    if ids is not None:
+        cache["ids"], cache["ts"] = ids, now
+    return ids
+
+
+def _is_unsubscribed(mp_id):
+    """mp_id 是否确认为「未订阅」。书架拉取失败时保守返回 False（按已订阅处理，避免误跳过）"""
+    subscribed = _fetch_subscribed_mp_ids()
+    return subscribed is not None and mp_id not in subscribed
+
+
 def verify_auth(auth):
     """校验微信读书 web 登录 cookie 是否有效
 
-    /api/user/notify 在已登录时返回 {"success":1,...}；未登录返回 errCode。
+    探测接口与抓取同源同强度（/web/mp/articles，严格校验 wr_skey）：
+    未登录/登录失效返回 errCode=-2010（errMsg 登录超时/未登录），判定无效；
+    -2041（已登录但探测号未关注）与成功列表同样证明登录态有效。
+    旧实现走 /api/user/notify 只是"半有效"探测——会话 cookie 在但 wr_skey
+    已过期时它仍返回 success=1，导致"开始检测有效、跑一半才报登录失效"。
 
     Returns:
         bool: True 有效 / False cookie 失效 / None 网络异常无法判断
     """
+    mp_id = _pick_probe_mp_id()
+    if mp_id:
+        r = _platform_request("GET", "/web/mp/articles",
+                              params={"bookId": mp_id, "offset": 0}, timeout=15)
+        if r is None:
+            return None
+        try:
+            data = r.json()
+            if data.get("success") == 1 or "reviews" in data:
+                return True
+            err = data.get("errCode")
+            if err == -2041:  # 登录态有效，只是该探测号未关注
+                return True
+            if err and _is_login_error(data):
+                return False
+            # 其它业务错误（参数类）也算登录态有效
+            return err is None or err == 0
+        except Exception:
+            return False
+    # 无可用 bookId 时退化为 notify 半有效检测
     r = _platform_request("GET", "/api/user/notify", timeout=15)
     if r is None:
         return None

@@ -20,7 +20,7 @@ account_list = {
     "MzI1NzAwNzY4OQ%3D%3D": "财经旗舰",
     "Mzg2MDc2NzQ3MQ%3D%3D": "表舅是养基大户",
     "MzUxNzE3NzI0NA%3D%3D": "华尔街情报圈",
-    "MzIyODU5NTU5Mg%3D%3D": "知识旅行家",
+    "MzkzNjY0MzUwNg%3D%3D": "闰土读财",
     "MzU4NTkwMDY5MQ%3D%3D": "炒股拌饭",
     "MzU1MDk3Njc3NA%3D%3D": "韭圈儿",
     "MzU4OTg2NTY0OA%3D%3D": "路透财经早报",
