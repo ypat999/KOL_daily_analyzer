@@ -311,7 +311,7 @@ def validate_weread_auth() -> tuple:
         tuple: (is_valid: bool, message: str)
     """
     try:
-        from wechat_weread import load_auth, verify_auth, AUTH_FILE
+        from wechat_weread import load_auth, probe_auth, open_weread_verify_page, AUTH_FILE
     except ImportError:
         return False, "未找到wechat_weread模块"
     if not os.path.exists(AUTH_FILE):
@@ -324,10 +324,16 @@ def validate_weread_auth() -> tuple:
     # 老凭据文件 token 可能为空串，只看 vid
     if not auth or not auth.get("vid"):
         return False, "微信读书凭据无效（缺少 vid）"
-    status = verify_auth(auth)
-    if status is False:
+    state = probe_auth(auth)
+    if state == "invalid":
         return False, "微信读书凭据已失效（token过期），需重新扫码登录"
-    if status is None:
+    if state == "verify":
+        # 账号级限频（已订阅公众号仍返回 -2041）：登录校验阶段就弹页面请你点验证
+        print("    检测到微信读书账号级限频（已订阅公众号仍返回 -2041），弹出页面请完成人机验证...")
+        if open_weread_verify_page():
+            return True, "微信读书凭据有效（已完成人机验证，限频已解除）"
+        return True, "微信读书凭据有效（存在账号级限频，需完成人机验证后才能抓取）"
+    if state == "unknown":
         return True, "微信读书凭据存在（网络异常，有效性待验证）"
     return True, "微信读书凭据有效"
 
