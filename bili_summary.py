@@ -1205,20 +1205,22 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
             return None
         
         # 检测GPU可用性并选择设备
+        # 用 ctranslate2 自身探测：不引入 torch —— torch 会加载第二套 CUDA/cuDNN/OpenMP
+        # 运行时（与 ctranslate2 各自的 libiomp5md/cudnn 同进程共存），多线程下争抢 GPU
+        # 会触发原生崩溃（Windows 事件日志：python3.11.exe ucrtbase.dll 0xc0000409 直接 abort，无 Python 堆栈）
         try:
-            import torch
-            if torch.cuda.is_available():
-                device = "cuda"
-                compute_type = "float16"  # GPU上使用float16以获得更好性能
-                print("检测到GPU可用，使用CUDA设备进行语音识别")
-            else:
-                device = "cpu"
-                compute_type = "int8"
-                print("未检测到GPU，使用CPU进行语音识别")
-        except ImportError:
+            import ctranslate2
+            has_cuda = ctranslate2.get_cuda_device_count() > 0
+        except Exception:
+            has_cuda = False
+        if has_cuda:
+            device = "cuda"
+            compute_type = "float16"  # GPU上使用float16以获得更好性能
+            print("检测到GPU可用，使用CUDA设备进行语音识别")
+        else:
             device = "cpu"
             compute_type = "int8"
-            print("torch未安装，使用CPU进行语音识别")
+            print("未检测到GPU，使用CPU进行语音识别")
         
         # 初始化模型（使用small模型，速度较快）
         # 加全局锁：faster-whisper/CT2 不支持多线程并发使用 GPU，会 native 崩溃
@@ -1241,21 +1243,15 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
 
             print(f"字幕生成成功: {srt_path}")
 
-            # 显式释放模型和GPU内存，避免长视频累积导致崩溃
+            # 显式释放模型，避免长视频累积占用显存（ctranslate2 销毁模型即归还显存）
             try:
                 del model
                 del segments
                 del info
                 import gc
                 gc.collect()
-                try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        print("已释放模型并清理GPU内存")
-                except:
-                    pass
-            except:
+                print("已释放模型并回收显存")
+            except Exception:
                 pass
 
         return srt_path
@@ -1368,15 +1364,6 @@ def generate_subtitle_with_ytdlp_whisper(bvid: str, video: dict, archive_folder:
                 print(f"已删除SRT字幕文件: {srt_path}")
         except Exception as delete_error:
             print(f"删除SRT字幕文件失败: {delete_error}")
-        
-        # 清理GPU内存（如果使用GPU）
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                print("已清理GPU内存缓存")
-        except:
-            pass
         
         # 删除音频文件，保留字幕文件
         try:
