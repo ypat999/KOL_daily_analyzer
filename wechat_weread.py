@@ -11,10 +11,9 @@
 - 待抓公众号必须先在该微信读书账号中「关注」（手机 App：书架 → 公众号 → 添加，
   且该公众号须先在微信中关注过）。未订阅时文章接口返回 -2041（无权限），
   网页端同一接口同样失败，非登录/抓取方式问题，无法用浏览器绕过。
-- -2041 的另一种情形：bookId 已在书架仍返回 -2041，属账号级限频（风控），
-  浏览器打开任一公众号页面完成人机验证即可解除（实测有效）。程序按书架订阅列表
-  区分这两种情况：未订阅才跳过；已订阅则判定为"需人机验证"——登录校验阶段就会
-  弹出页面请你点验证，抓取中途命中则熔断整轮并落盘冷却时间（COOLDOWN_FILE）。
+- -2041 的另一种情形：bookId 已在书架仍返回 -2041，属「需要过人机验证」（不是等冷却），
+  程序会弹出浏览器页面请你点击完成（实测有效）。区分方式：按书架订阅列表判断——
+  未订阅才跳过；已订阅即弹页面，登录校验阶段与抓取过程中命中都会弹。
 - 凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用。
 - mp id：公众号名 → bookId（MP_WXS_xxx）缓存在 weread_mpids.json，需手动维护
   （平台 wxs2mp 解析接口已下线，新公众号把 id 手动加入该文件）。
@@ -58,46 +57,16 @@ MAX_PAGES = 2
 _AUTO_RELOGINED = False
 # 已确认「未关注/无权限」(-2041) 的 mp_id 集合：本轮跳过该账号，不进重试轮（关注前重试无意义）
 _DENIED_MP_IDS = set()
-# 账号级限频：任一「已订阅却 -2041」即视为账号被临时限制。
-# 命中后本轮立即停止拉取（不再逐账号 20s 硬等），并落盘冷却截止时间，
-# 冷却期内重跑直接跳过公众号环节，避免持续请求延长限制。
-_RATE_LIMITED = False
-COOLDOWN_FILE = "weread_cooldown.json"
-COOLDOWN_MINUTES = 60
-
-
-def _save_cooldown(minutes=COOLDOWN_MINUTES):
-    """记录账号级限频冷却截止时间"""
-    try:
-        with open(COOLDOWN_FILE, "w", encoding="utf-8") as f:
-            json.dump({"until": time.time() + minutes * 60,
-                       "at": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
-    except Exception:
-        pass
-
-
-def _cooldown_remaining():
-    """冷却剩余秒数（0 表示未在冷却）"""
-    try:
-        with open(COOLDOWN_FILE, "r", encoding="utf-8") as f:
-            until = float(json.load(f).get("until", 0))
-        return max(0, int(until - time.time()))
-    except Exception:
-        return 0
-
-
-def _clear_cooldown():
-    """抓取恢复正常时清除冷却记录"""
-    try:
-        os.remove(COOLDOWN_FILE)
-    except Exception:
-        pass
+# 人机验证：任一「已订阅却 -2041」= 微信读书要求过人机验证（点击/滑块），不是"等冷却"。
+# 命中后立即弹出浏览器页面请你点击完成，通过后重试该账号。
+_VERIFY_ABORTED = False   # 验证页面被关掉（本轮未完成验证）→ 停止本轮剩余账号，避免逐个弹窗
+_VERIFIED_MP_IDS = set()  # 本轮流已过人机验证的 mp_id，同一轮内不再重复弹窗
 
 
 def _is_login_error(data):
     """判断微信读书接口错误是否因登录失效（-2010 登录超时/未登录）。
 
-    -2041 为「公众号未关注/无权限」，非登录失效，由 get_mp_articles 单独处理。
+    -2041 为「未订阅 / 需要人机验证」，非登录失效，由 get_mp_articles 单独处理。
     """
     code = data.get("errCode")
     msg = str(data.get("errMsg", "") or "")
@@ -215,24 +184,27 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
                 data = r.json()
                 if data.get("errCode"):
                     err = data.get("errMsg") or data.get("errCode")
-                    # -2041：文章接口无权限，两种成因——
+                    # -2041：文章接口无权限，按书架订阅区分两种成因——
                     #  a) bookId 不在书架：公众号真未订阅（web 端无关注入口，需手机 App 添加），跳过
-                    #  b) bookId 已订阅却 -2041：账号级临时限频，立即停止整轮并落盘冷却时间
-                    # 以书架订阅列表区分，避免把已订阅号误判为"永久未关注"而整轮跳过。
+                    #  b) bookId 已订阅却 -2041：微信读书要求过人机验证（点击/滑块），
+                    #     立即弹出浏览器页面请你点击，通过后重试该账号（不是"限频等冷却"）
                     if data.get("errCode") == -2041:
                         if _is_unsubscribed(mp_id):
                             _DENIED_MP_IDS.add(mp_id)
                             print("  接口返回错误: -2041（该公众号未在微信读书书架中订阅/收录："
                                   "请先在微信读书 App 关注；核对: python check_weread_follows.py）")
                             return []
-                        # 已订阅却 -2041：账号级临时限频。立即停止整轮（不再逐账号硬等重试，
-                        # 重试只会持续请求、延长限制），落盘冷却时间供下次运行跳过。
-                        global _RATE_LIMITED
-                        _RATE_LIMITED = True
-                        _save_cooldown()
-                        print(f"  接口返回错误: -2041（已订阅仍限频 = 账号级限频），立即停止本轮公众号拉取。"
-                              f"重跑时会自动弹出人机验证页面（浏览器打开公众号页面完成验证即可恢复，"
-                              f"实测有效）；否则冷却 {COOLDOWN_MINUTES} 分钟（已记录 {COOLDOWN_FILE}）")
+                        if mp_id in _VERIFIED_MP_IDS:
+                            _DENIED_MP_IDS.add(mp_id)  # 已验证过仍失败，本轮跳过，不再重复弹窗
+                            print("  接口返回错误: -2041（已完成人机验证仍不可用），本轮跳过该账号")
+                            return []
+                        global _VERIFY_ABORTED
+                        print("  接口返回错误: -2041（需要人机验证），弹出浏览器页面请点击完成验证...")
+                        if open_weread_verify_page(mp_id=mp_id):
+                            _VERIFIED_MP_IDS.add(mp_id)
+                            continue  # 验证通过，重试当前页
+                        _VERIFY_ABORTED = True
+                        print("  未完成人机验证，本轮公众号任务中止")
                         return []
                     # 登录中途失效（开头登录校验通过、跑到一半 cookie 过期）：
                     # 自动重新扫码登录一次，用新凭据重试当前页
@@ -277,7 +249,7 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
 def _pick_probe_mp_id():
     """取探测用公众号 bookId：优先「书架已订阅且在配置缓存中」的号，其次缓存第一个
 
-    用已订阅号探测，-2041 才能确定为账号级限频；探测到未订阅号的 -2041 只是没关注。
+    用已订阅号探测，-2041 才能确定为需要人机验证；探测到未订阅号的 -2041 只是没关注。
     """
     subscribed = _fetch_subscribed_mp_ids() or set()
     ids = []
@@ -296,7 +268,7 @@ def _pick_probe_mp_id():
     return next(iter(subscribed), None)
 
 
-# 书架公众号订阅缓存：{ts, ids}，区分 -2041 是「真未订阅」还是「已订阅但瞬时风控」
+# 书架公众号订阅缓存：{ts, ids}，区分 -2041 是「真未订阅」还是「已订阅但需要人机验证」
 _SUBSCRIBED_CACHE = {"ts": 0.0, "ids": None}
 
 
@@ -327,7 +299,7 @@ def _is_unsubscribed(mp_id):
 
 
 def probe_auth(auth):
-    """探测微信读书登录态，并识别是否被账号级人机验证限制
+    """探测微信读书登录态，并识别是否需要过人机验证
 
     探测接口与抓取同源同强度（/web/mp/articles，严格校验 wr_skey）：
     未登录/登录失效返回 errCode=-2010（errMsg 登录超时/未登录）；
@@ -336,7 +308,7 @@ def probe_auth(auth):
     已过期时它仍返回 success=1，导致"开始检测有效、跑一半才报登录失效"。
 
     Returns:
-        str: "ok" 正常 / "verify" 已订阅却 -2041（账号级限频，需人工过人机验证）
+        str: "ok" 正常 / "verify" 已订阅却 -2041（需要过人机验证）
              / "invalid" cookie 失效 / "unknown" 网络异常无法判断
     """
     mp_id = _pick_probe_mp_id()
@@ -362,42 +334,51 @@ def probe_auth(auth):
     if _is_login_error(data):
         return "invalid"
     if data.get("errCode") == -2041:
-        # 书架已订阅却 -2041 = 账号级限频（需人机验证）；未订阅则登录态本身有效
+        # 书架已订阅却 -2041 = 需要过人机验证；未订阅则登录态本身有效
         subscribed = _fetch_subscribed_mp_ids()
         return "verify" if subscribed and mp_id in subscribed else "ok"
     # 其它业务错误（参数类）也算登录态有效
     return "ok"
 
 
-def _mp_reader_url(book):
-    """由书架条目的 deepLink 取公众号网页地址（v 参数即 reader 页 hash）"""
-    deep = (book or {}).get("deepLink") or ""
-    m = re.search(r"[?&]v=([^&]+)", deep)
-    if m:
-        return f"{WEREAD_BASE}/web/mp/reader/{m.group(1)}"
-    return deep or None
-
-
-def _pick_mp_reader_url():
-    """取任一已订阅公众号的网页地址（人工过人机验证用），优先配置中的公众号"""
+def _shelf_mp_books():
+    """书架中的公众号条目（type=3，含 bookId / title / deepLink）"""
     try:
         r = _platform_request("GET", "/web/shelf/sync",
                               params={"synckey": 0, "listType": 1}, timeout=15)
-        if r is None or r.status_code != 200:
-            return None
-        books = [b for b in (r.json().get("books") or []) if b.get("type") == 3]
-        if not books:
-            return None
-        prefer = set()
+        if r is not None and r.status_code == 200:
+            return [b for b in (r.json().get("books") or []) if b.get("type") == 3]
+    except Exception:
+        pass
+    return []
+
+
+def _mp_reader_url(mp_id):
+    """按 bookId 取该公众号的网页地址（deepLink 的 v 参数即 reader 页 hash）"""
+    for b in _shelf_mp_books():
+        if b.get("bookId") == mp_id:
+            deep = b.get("deepLink") or ""
+            m = re.search(r"[?&]v=([^&]+)", deep)
+            return f"{WEREAD_BASE}/web/mp/reader/{m.group(1)}" if m else (deep or None)
+    return None
+
+
+def _pick_mp_reader_url():
+    """取任一已订阅公众号的网页地址（不知道具体是哪个号时用），优先配置中的公众号"""
+    books = _shelf_mp_books()
+    if not books:
+        return None
+    prefer = set()
+    try:
         if os.path.exists(MPID_CACHE_FILE):
             with open(MPID_CACHE_FILE, "r", encoding="utf-8") as f:
                 prefer = {v for v in json.load(f).values() if isinstance(v, str)}
-        for b in books:
-            if b.get("bookId") in prefer:
-                return _mp_reader_url(b)
-        return _mp_reader_url(books[0])
     except Exception:
-        return None
+        pass
+    for b in books:
+        if b.get("bookId") in prefer:
+            return _mp_reader_url(b.get("bookId"))
+    return _mp_reader_url(books[0].get("bookId"))
 
 
 def _inject_web_cookies(driver):
@@ -418,24 +399,42 @@ def _inject_web_cookies(driver):
             continue
 
 
-def open_weread_verify_page(max_wait=180):
-    """弹出浏览器打开公众号页面，请人工完成人机验证以解除账号级限频
+def _verify_target_ok(mp_id):
+    """人机验证是否已通过：指定公众号看该接口是否不再 -2041；未指定则看整体登录探测"""
+    if not mp_id:
+        return probe_auth(load_auth()) == "ok"
+    r = _platform_request("GET", "/web/mp/articles",
+                          params={"bookId": mp_id, "offset": 0}, timeout=15)
+    if r is None or r.status_code != 200:
+        return False
+    try:
+        return r.json().get("errCode") != -2041
+    except Exception:
+        return False
 
-    账号级限频（已订阅公众号仍返回 -2041）只能在该账号会话中过人机验证解除：
-    用真实 Chrome（注入已保存 cookie）打开任一公众号页面，你点完验证后程序
-    自动检测到恢复即关闭窗口继续；直接关掉窗口也可跳过。
+
+def open_weread_verify_page(mp_id=None, max_wait=180):
+    """弹出浏览器打开公众号页面，请你点击完成人机验证
+
+    -2041（已订阅公众号却返回无权限）= 微信读书要求过人机验证。这里用真实 Chrome
+    （注入已保存 cookie）打开对应公众号的 reader 页，你点完弹窗验证后程序自动检测到
+    恢复即关闭窗口继续；直接关掉窗口则视为放弃（本轮不再逐个账号弹窗）。
+
+    Args:
+        mp_id: 需要验证的公众号 bookId；为 None 时打开任一已订阅公众号（登录校验阶段用）
+        max_wait: 最长等待秒数
 
     Returns:
-        bool: 是否已恢复正常
+        bool: 是否已通过验证
     """
-    url = _pick_mp_reader_url() or WEREAD_BASE
+    url = (_mp_reader_url(mp_id) if mp_id else _pick_mp_reader_url()) or WEREAD_BASE
     driver = _create_content_browser()
     if driver is None:
         print(f"  无法打开浏览器，请手动打开 {url} 完成人机验证后重跑")
         return False
     print("  " + "=" * 56)
     print("  已打开微信读书公众号页面：如出现人机验证/滑块，请点击完成验证。")
-    print(f"  验证通过后自动继续（最多等待 {max_wait} 秒）；直接关闭窗口可跳过。")
+    print(f"  验证通过后自动继续（最多等待 {max_wait} 秒）；直接关闭窗口则本轮中止。")
     print("  " + "=" * 56)
     try:
         _inject_web_cookies(driver)
@@ -448,11 +447,10 @@ def open_weread_verify_page(max_wait=180):
                     break
             except Exception:
                 break
-            if probe_auth(load_auth()) == "ok":
-                print("  检测到限频已解除，继续执行任务")
-                _clear_cooldown()
+            if _verify_target_ok(mp_id):
+                print("  人机验证已通过，继续抓取")
                 return True
-        print("  未检测到限频解除（等待超时或窗口已关闭）")
+        print("  未检测到验证通过（等待超时或窗口已关闭）")
         return False
     except Exception as e:
         print(f"  人机验证页面异常: {e}")
@@ -690,21 +688,21 @@ def generate_investment_advice(all_content, today):
     return investment_advice
 
 
-def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
+def run_wechat_task(generate_advice=True, prefer_web_content=True):
     """运行微信公众号文章分析任务（微信读书桥接版）
 
     Args:
         generate_advice: 是否生成投资建议
         prefer_web_content: 正文抓取优先网页(真实Chrome)，requests 仅兜底。
             说明：文章列表接口 /web/mp/articles 返回 -2041 时按书架订阅区分——
-            未订阅需先在微信读书 App 关注；已订阅则属账号级限频，登录校验阶段
-            会弹页面请人工过人机验证。
-        force: 忽略账号级限频冷却记录，强制重跑（默认 False）
+            未订阅需先在微信读书 App 关注；已订阅则需要过人机验证，登录校验阶段
+            和抓取过程中都会弹出页面请你点击完成。
     """
-    global _AUTO_RELOGINED, _RATE_LIMITED
+    global _AUTO_RELOGINED, _VERIFY_ABORTED
     _AUTO_RELOGINED = False  # 每轮任务重置"已自动重登"标记
-    _RATE_LIMITED = False    # 每轮任务重置"账号级限频"标记
-    _DENIED_MP_IDS.clear()  # 每轮任务重置"未关注/无权限"记录（关注后重跑即可被清除）
+    _VERIFY_ABORTED = False  # 每轮任务重置"验证未完成中止"标记
+    _DENIED_MP_IDS.clear()   # 每轮任务重置"未关注/无权限"记录（关注后重跑即可被清除）
+    _VERIFIED_MP_IDS.clear()
 
     print("\n" + "=" * 50)
     print("开始执行微信公众号文章分析任务（微信读书桥接）")
@@ -721,7 +719,7 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
             print("登录失败，微信任务中止")
             return None
     else:
-        # 登录校验即探测账号级限频，命中就弹页面请人工过验证（别等跑任务中途才发现）
+        # 登录校验即探测是否需要人机验证，命中就弹页面请你点（别等跑任务中途才发现）
         state = probe_auth(auth)
         if state == "invalid":
             print("微信读书凭据已失效（token过期），自动重新扫码登录...")
@@ -733,20 +731,10 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
         elif state == "unknown":
             print("微信读书凭据有效性校验失败（网络异常），按有效继续执行...")
         if state == "verify":
-            print("检测到微信读书账号级限频（已订阅公众号仍返回 -2041），需人工完成人机验证")
-            if open_weread_verify_page():
-                state = "ok"
-            else:
-                _save_cooldown()  # 未完成验证：落盘冷却，本轮跳过以免继续请求加重限制
-        if state == "ok":
-            _clear_cooldown()  # 抓取通道正常，清除历史冷却记录
-
-    remaining = _cooldown_remaining()
-    if remaining > 0 and not force:
-        print(f"微信读书账号级限频冷却中（剩余 {remaining // 60} 分 {remaining % 60} 秒），"
-              f"本轮跳过公众号任务；重跑时会再次弹出人机验证页面，"
-              f"或删除 {COOLDOWN_FILE} 强制重试")
-        return None
+            print("检测到微信读书要求人机验证（已订阅公众号仍返回 -2041），弹出页面请点击完成验证")
+            if not open_weread_verify_page():
+                print("未完成人机验证，微信任务中止")
+                return None
 
     accounts = load_config()
     if not accounts:
@@ -791,7 +779,7 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
             for page in range(1, MAX_PAGES + 1):
                 arts = timed(f"微信-文章列表 {name} p{page}", get_mp_articles, auth, mp_id, page=page,
                              group="微信-文章列表翻页")
-                if _RATE_LIMITED:
+                if _VERIFY_ABORTED:
                     break
                 if not arts:
                     break
@@ -803,8 +791,6 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
                     time.sleep(random.uniform(2, 4))
             got = len(today_articles)
             print(f"  {name} 获取到 {got} 篇限定时间内文章")
-            if got > 0:
-                _clear_cooldown()  # 抓取恢复正常，清除限频冷却记录
             for art in today_articles:
                 try:
                     if prefer_web_content:
@@ -817,22 +803,22 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
                     continue
         except Exception as e:
             print(f"  处理 {name} 异常: {e}")
-        if _RATE_LIMITED:
-            print("\n检测到账号级限频，终止本轮剩余公众号处理（继续请求只会延长限制）")
+        if _VERIFY_ABORTED:
+            print("\n未完成人机验证，终止本轮剩余公众号处理")
             break
         if got == 0:
             failed_accounts.append(acc)
 
     # 末轮重试：首轮未获取到文章的账号（-2041 未关注的已在 get_mp_articles 中记录并跳过）
-    if failed_accounts and not _RATE_LIMITED:
+    if failed_accounts and not _VERIFY_ABORTED:
         print(f"\n首轮有 {len(failed_accounts)} 个账号未获取到文章，等待60秒后统一重试...")
         with stage("微信-重试轮等待60秒", group="微信-限流等待"):
             time.sleep(60)
         if prefer_web_content:
             ensure_driver()
         for acc in failed_accounts:
-            if _RATE_LIMITED:
-                print("检测到账号级限频，放弃剩余重试")
+            if _VERIFY_ABORTED:
+                print("未完成人机验证，放弃剩余重试")
                 break
             name = acc.get("name", "")
             link = acc.get("example_link", "")
@@ -849,7 +835,7 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True, force=False):
                 got = 0
                 for page in range(1, MAX_PAGES + 1):
                     arts = get_mp_articles(auth, mp_id, page=page)
-                    if _RATE_LIMITED or not arts:
+                    if _VERIFY_ABORTED or not arts:
                         break
                     page_today = [a for a in arts if is_today_article_ts(a.get("publishTime", 0))]
                     for art in page_today:

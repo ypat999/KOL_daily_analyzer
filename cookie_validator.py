@@ -328,11 +328,11 @@ def validate_weread_auth() -> tuple:
     if state == "invalid":
         return False, "微信读书凭据已失效（token过期），需重新扫码登录"
     if state == "verify":
-        # 账号级限频（已订阅公众号仍返回 -2041）：登录校验阶段就弹页面请你点验证
-        print("    检测到微信读书账号级限频（已订阅公众号仍返回 -2041），弹出页面请完成人机验证...")
+        # 已订阅公众号仍返回 -2041 = 需要过人机验证：登录校验阶段就弹页面请你点
+        print("    检测到微信读书要求人机验证（已订阅公众号仍返回 -2041），弹出页面请点击完成验证...")
         if open_weread_verify_page():
-            return True, "微信读书凭据有效（已完成人机验证，限频已解除）"
-        return True, "微信读书凭据有效（存在账号级限频，需完成人机验证后才能抓取）"
+            return True, "微信读书凭据有效（已通过人机验证）"
+        return True, "微信读书凭据有效（仍有待完成的人机验证，抓取时会再次弹页面）"
     if state == "unknown":
         return True, "微信读书凭据存在（网络异常，有效性待验证）"
     return True, "微信读书凭据有效"

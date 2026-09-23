@@ -3,9 +3,9 @@
 """检查微信读书账号对配置中各公众号的拉取状态（基于书架订阅列表归类）
 
 用法: python check_weread_follows.py
-- 未订阅     → 该号不在当前账号书架里，需先在手机微信读书 App 关注
-- 限频/异常  → 书架已订阅但接口暂不可用（瞬时风控），等几分钟重跑
-- 已订阅     → 正常，能拉到文章列表
+- 未订阅       → 该号不在当前账号书架里，需先在手机微信读书 App 关注
+- 需人机验证   → 书架已订阅但要求过人机验证（跑任务时会自动弹页面给你点）
+- 已订阅       → 正常，能拉到文章列表
 """
 import json
 import time
@@ -33,7 +33,7 @@ except Exception as e:
     print(f"拉取书架订阅失败: {e!r}")
     subscribed = None
 
-print("检查公众号状态（-2041 按书架订阅区分未订阅/限频）...\n")
+print("检查公众号状态（-2041 按书架订阅区分未订阅/需人机验证）...\n")
 for acc in accounts:
     name = acc.get("name", "")
     book = mpids.get(name, "")
@@ -51,7 +51,7 @@ for acc in accounts:
             if subscribed is not None and book not in subscribed:
                 print(f"[未订阅] {name}  <- 手机微信读书 App 关注后再跑")
             else:
-                print(f"[限频/异常] {name}（书架已订阅仍 -2041，等几分钟重跑）")
+                print(f"[需人机验证] {name}（书架已订阅但要求过人机验证，跑任务时会自动弹页面）")
         elif code:
             print(f"[异常]   {name}: errCode={code} {d.get('errMsg')}")
         else:
