@@ -1,6 +1,7 @@
 # 标准库导入
 import json
 import os
+import sys
 import time
 import shutil
 from datetime import datetime, timedelta
@@ -129,34 +130,31 @@ def is_within_limit_hours(publish_date) -> bool:
     if isinstance(publish_date, datetime):
         return _within_limit_by_datetime(publish_date, now, is_weekend_period)
     
-    # 处理日期格式：'YYYY-MM-DD' / 'MM-DD' / 'M-D'，可带时间 'YYYY-MM-DD HH:MM'
-    date_match = re.match(r'(\d{4}-)?(\d{1,2}-\d{1,2})(?:[ T](\d{1,2}:\d{2}))?', publish_date)
+    # 处理日期格式：'YYYY-MM-DD' / 'MM-DD' / 'M-D' / 'M月D日' / 'YYYY年M月D日'，可带时间 'HH:MM'
+    # 注意：B站网页卡片常用中文格式（如 '9月23日'），此前只匹配带连字符的写法，
+    # 解析失败会落到下面相对时间分支末尾的 return True，导致过期视频被误收录
+    date_match = re.match(
+        r'(?:(\d{4})[-年])?(\d{1,2})[-月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{2}))?',
+        publish_date)
     if date_match:
         try:
-            date_part = date_match.group(2)  # 获取MM-DD部分
-            time_part = date_match.group(3)  # 可能带 HH:MM（如 "2026-09-01 22:02"）
-            
-            # 如果有年份，直接使用；如果没有，使用当前年份
-            if date_match.group(1):
-                full_date_str = f"{date_match.group(1)}{date_part}"
-                video_date = datetime.strptime(full_date_str, '%Y-%m-%d')
-            else:
-                # 只有月日，使用当前年份
-                current_year = now.year
-                full_date_str = f"{current_year}-{date_part}"
-                video_date = datetime.strptime(full_date_str, '%Y-%m-%d')
-                
-                # 如果解析出的日期在未来，说明是去年的（比如1月1日刚过时）
-                if video_date > now:
-                    video_date = video_date.replace(year=current_year - 1)
-            
+            has_year = bool(date_match.group(1))
+            video_date = datetime(
+                int(date_match.group(1)) if has_year else now.year,
+                int(date_match.group(2)),
+                int(date_match.group(3)))
+
+            # 没写年份且解析出的日期在未来，说明是去年的（比如1月1日刚过时）
+            if not has_year and video_date > now:
+                video_date = video_date.replace(year=now.year - 1)
+
             # 带时间则用真实发布时间（此前丢弃 HH:MM，晚上发的视频会被当成当天
             # 00:00，隔天凌晨运行时误判 >18h 而跳过）
-            if time_part:
+            if date_match.group(4):
                 video_date = video_date.replace(
-                    hour=int(time_part.split(":")[0]),
-                    minute=int(time_part.split(":")[1]))
-            
+                    hour=int(date_match.group(4)),
+                    minute=int(date_match.group(5)))
+
             return _within_limit_by_datetime(video_date, now, is_weekend_period)
         except ValueError:
             return False
@@ -349,6 +347,41 @@ def get_videos_by_selenium_threaded(up_ids: list, max_workers: int = 3):
     return all_videos
 
 # 主功能函数：获取字幕URL（复用现有浏览器实例）
+SUBTITLE_BTN_SELECTOR = 'div.bpx-player-ctrl-subtitle'
+SUBTITLE_LANG_SELECTOR = 'div.bpx-player-ctrl-subtitle-language-item'
+
+
+def _select_subtitle_language(driver_video, timeout=8) -> bool:
+    """在新版字幕面板里选中「中文（AI）」（data-lan=ai-zh）
+
+    播放器改版后，点字幕按钮只是展开面板，必须在面板里选语言才会真正请求字幕轨；
+    旧版没有这个面板（点按钮即加载），选不到就返回 False，由调用方继续扫描请求。
+    """
+    try:
+        WebDriverWait(driver_video, timeout).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, SUBTITLE_LANG_SELECTOR)))
+    except Exception:
+        return False
+    items = driver_video.find_elements(By.CSS_SELECTOR, SUBTITLE_LANG_SELECTOR)
+    target = None
+    for it in items:
+        if (it.get_attribute('data-lan') or '') == 'ai-zh':
+            target = it
+            break
+    if target is None and items:
+        target = items[0]
+    if target is None:
+        return False
+    try:
+        # 面板在控制栏里同样可能被判为不可见，统一用 JS 点击
+        driver_video.execute_script("arguments[0].click();", target)
+        print(f"已选择字幕语言：{(target.get_attribute('innerText') or '').strip()}")
+    except Exception as e:
+        print(f"选择字幕语言失败：{str(e)[:80]}")
+        return False
+    return True
+
+
 def get_subtitle_url(bvid: str, driver_video=None) -> str:
     # 如果没有传入driver实例，则创建新的
     if driver_video is None:
@@ -371,34 +404,51 @@ def get_subtitle_url(bvid: str, driver_video=None) -> str:
         time.sleep(10)
         print("等待10秒后准备点击字幕按钮")
 
-        # 点击字幕按钮（循环6次，成功就跳出）
-        for attempt in range(6):
+        # 点击字幕按钮（循环3次，成功就跳出）
+        # 注意：控制栏未激活时按钮处于不可见状态，普通 click 会抛
+        # ElementClickInterceptedException，这里统一用 JS 点击
+        clicked = False
+        for attempt in range(3):
             try:
-                subtitle_button = driver_video.find_element(By.CLASS_NAME, 'bpx-player-ctrl-subtitle')
-                subtitle_button.click()
+                subtitle_button = driver_video.find_element(By.CSS_SELECTOR, SUBTITLE_BTN_SELECTOR)
+                driver_video.execute_script("arguments[0].click();", subtitle_button)
                 print(f"已点击字幕按钮（第{attempt + 1}次尝试成功）")
-                time.sleep(2)
-                # 提取第一个匹配的请求URL
-                for request in driver_video.requests:
-                    if 'aisubtitle.hdslb.com' in request.url :
-                        print(f"找到字幕请求URL: {request.url}")
-                        # 直接返回请求URL
-                        return request.url
+                clicked = True
                 break
-            except Exception as e:
+            except Exception:
                 print(f"点击字幕按钮失败（第{attempt + 1}次尝试）")
-                if attempt < 4:  # 如果不是最后一次尝试，等待2秒后重试
-                    time.sleep(10)
-                else:
-                    print("字幕按钮点击尝试已达5次上限")
+                time.sleep(3)
+        if not clicked:
+            print("字幕按钮点击全部失败，直接扫描页面请求")
+
+        # 新版播放器需在面板中选「中文（AI）」才会加载字幕轨
+        time.sleep(1.5)
+        _select_subtitle_language(driver_video)
+
+        # 字幕轨在播放时才真正拉取，静音播放以触发（找到后立即暂停）
+        try:
+            driver_video.execute_script(
+                "var v=document.querySelector('video');"
+                "if(v){v.muted=true;var p=v.play();if(p&&p.catch)p.catch(function(){});}")
+        except Exception:
+            pass
+
+        # 轮询等待字幕 JSON 请求（aisubtitle.hdslb.com），最多约 25 秒
+        for _ in range(50):
+            for request in driver_video.requests:
+                if 'aisubtitle.hdslb.com' in request.url:
+                    print(f"找到字幕请求URL: {request.url}")
+                    try:
+                        driver_video.execute_script(
+                            "var v=document.querySelector('video');if(v)v.pause();")
+                    except Exception:
+                        pass
+                    return request.url
+            time.sleep(0.5)
         print(f"未找到字幕请求URL")
         return None
     except Exception as e:
         print(f"获取字幕URL失败：{str(e)}")
-        # 打印所有请求URL以便调试
-        # print("所有请求URL:")
-        # for request in driver.requests:
-        #     print(f"- {request.url}")
         return None
     finally:
         # 只有自己创建的浏览器实例才需要关闭
@@ -1178,9 +1228,25 @@ def download_video_with_ytdlp(video_url: str, output_dir: str) -> str:
         print(f"yt-dlp下载异常: {e}")
         return None
 
-def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
-    """使用faster-whisper进行语音识别
-    
+TRANSCRIBE_TIMEOUT = 1800  # 转写子进程最长等待秒数（2 小时音频实测约 105 秒）
+
+# 转写模型挂在模块级全局上：CT2 模型析构会 abort（长音频必现），
+# 放局部变量会在函数返回时立刻触发析构，所以必须持有到进程末尾由 os._exit 退出
+_WHISPER_MODEL = None
+
+
+def _load_whisper_model(model_cls, device: str, compute_type: str):
+    """加载并持有 faster-whisper 模型（每个转写子进程只加载一次）"""
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is None:
+        print(f"加载faster-whisper模型 (设备: {device}, 计算类型: {compute_type})...")
+        _WHISPER_MODEL = model_cls("small", device=device, compute_type=compute_type)
+    return _WHISPER_MODEL
+
+
+def _transcribe_worker(audio_path: str, output_dir: str) -> str:
+    """真正执行 whisper 转写（只由子进程调用，入口见 transcribe_audio_with_whisper）
+
     Args:
         audio_path: 音频文件路径
         output_dir: 输出目录
@@ -1222,11 +1288,9 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
             compute_type = "int8"
             print("未检测到GPU，使用CPU进行语音识别")
         
-        # 初始化模型（使用small模型，速度较快）
         # 加全局锁：faster-whisper/CT2 不支持多线程并发使用 GPU，会 native 崩溃
         with WHISPER_LOCK:
-            print(f"加载faster-whisper模型 (设备: {device}, 计算类型: {compute_type})...")
-            model = WhisperModel("small", device=device, compute_type=compute_type)
+            model = _load_whisper_model(WhisperModel, device, compute_type)
 
             print(f"开始语音识别: {audio_path}")
             segments, info = model.transcribe(audio_path, beam_size=5, language="zh")
@@ -1243,21 +1307,93 @@ def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
 
             print(f"字幕生成成功: {srt_path}")
 
-            # 显式释放模型，避免长视频累积占用显存（ctranslate2 销毁模型即归还显存）
+            # 只关闭生成器，不再显式销毁模型：del model + gc.collect() 会在 CUDA
+            # 释放阶段触发原生 abort（长音频必现），交给 os._exit 跳过析构更安全
             try:
-                del model
-                del segments
-                del info
-                import gc
-                gc.collect()
-                print("已释放模型并回收显存")
+                close = getattr(segments, "close", None)
+                if close:
+                    close()
             except Exception:
                 pass
+            del segments, info
 
         return srt_path
         
     except Exception as e:
         print(f"语音识别异常: {e}")
+        return None
+
+
+def transcribe_audio_with_whisper(audio_path: str, output_dir: str) -> str:
+    """使用faster-whisper生成字幕（在隔离子进程中执行转写）
+
+    CT2 在 Windows 上销毁 CUDA 模型时会抛未处理 C++ 异常直接 abort 整个进程
+    （事件日志 0xe06d7363 → ucrtbase 0xc0000409，无 Python 堆栈；长音频必现）。
+    放到子进程里跑：最坏只损失这一个视频的字幕，不会中断整个分析任务。
+
+    Args:
+        audio_path: 音频文件路径
+        output_dir: 输出目录
+
+    Returns:
+        str: 生成的字幕文件路径，失败返回 None
+    """
+    srt_path = os.path.join(output_dir, os.path.basename(audio_path).replace('.wav', '.srt'))
+    if os.path.exists(srt_path):
+        print(f"字幕文件已存在，跳过生成: {srt_path}")
+        return srt_path
+    if not os.path.exists(audio_path):
+        print(f"音频文件不存在，跳过转写: {audio_path}")
+        return None
+
+    # 全局锁：同一时刻只允许一个转写子进程占用 GPU（多个 CT2 CUDA 上下文并发会崩）
+    with WHISPER_LOCK:
+        module_path = os.path.abspath(__file__)
+        # -X utf8：强制子进程用 UTF-8 输出，避免管道按 GBK 编码导致日志乱码/解码异常
+        cmd = [sys.executable, "-X", "utf8", "-u", module_path,
+               "--transcribe", audio_path, output_dir]
+        print(f"启动转写子进程: {os.path.basename(audio_path)}")
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                cwd=os.path.dirname(module_path))
+        except Exception as e:
+            print(f"启动转写子进程失败: {e}")
+            return None
+
+        watchdog = threading.Timer(TRANSCRIBE_TIMEOUT, proc.kill)
+        watchdog.start()
+        finished = False
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    print(line)
+                if "字幕生成成功" in line:
+                    finished = True
+            proc.wait()
+        except Exception as e:
+            print(f"读取转写子进程输出异常: {e}")
+        finally:
+            watchdog.cancel()
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+
+        # 子进程可能在写完字幕后的析构阶段崩溃退出，只要字幕已生成就算成功
+        if finished and os.path.exists(srt_path):
+            print(f"转写完成: {srt_path}（子进程退出码 {proc.returncode}）")
+            return srt_path
+        if os.path.exists(srt_path):
+            print(f"转写子进程异常退出（退出码 {proc.returncode}），已删除不完整字幕")
+            try:
+                os.remove(srt_path)
+            except Exception:
+                pass
+        else:
+            print(f"转写失败（子进程退出码 {proc.returncode}），该视频按无字幕处理")
         return None
 
 def format_time(seconds: float) -> str:
@@ -1430,5 +1566,13 @@ def get_subtitle_url_browser_fallback(bvid, video, archive_folder: str = None):
         return generate_subtitle_with_ytdlp_whisper(bvid, video, archive_folder)
 
 if __name__ == "__main__":
+    # 转写子进程入口：python bili_summary.py --transcribe <音频> <输出目录>
+    if len(sys.argv) >= 4 and sys.argv[1] == "--transcribe":
+        _transcribe_worker(sys.argv[2], sys.argv[3])
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # 直接退出，跳过解释器清理：CT2 销毁 CUDA 模型时会 abort（长音频必现），
+        # 字幕此时已落盘，没必要冒崩溃风险
+        os._exit(0)
     run_bili_task()
     
