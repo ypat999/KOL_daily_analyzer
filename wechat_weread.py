@@ -189,7 +189,7 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
                     #  b) bookId 已订阅却 -2041：微信读书要求过人机验证（点击/滑块），
                     #     立即弹出浏览器页面请你点击，通过后重试该账号（不是"限频等冷却"）
                     if data.get("errCode") == -2041:
-                        if _is_unsubscribed(mp_id):
+                        if _is_unsubscribed(mp_id, refresh=True):
                             _DENIED_MP_IDS.add(mp_id)
                             print("  接口返回错误: -2041（该公众号未在微信读书书架中订阅/收录："
                                   "请先在微信读书 App 关注；核对: python check_weread_follows.py）")
@@ -272,11 +272,15 @@ def _pick_probe_mp_id():
 _SUBSCRIBED_CACHE = {"ts": 0.0, "ids": None}
 
 
-def _fetch_subscribed_mp_ids():
-    """拉取当前账号书架中的公众号订阅 bookId 集合（/web/shelf/sync，type=3），300秒缓存"""
+def _fetch_subscribed_mp_ids(refresh=False):
+    """拉取当前账号书架中的公众号订阅 bookId 集合（/web/shelf/sync，type=3），300秒缓存
+
+    注意：会话异常时该接口可能返回 200 但 books 为空，这种情况按「未知」处理（返回 None
+    且不写缓存）——否则会把"需要人机验证"误判成"未订阅"，从而跳过弹窗分支。
+    """
     now = time.time()
     cache = _SUBSCRIBED_CACHE
-    if cache["ids"] is not None and now - cache["ts"] < 300:
+    if not refresh and cache["ids"] and now - cache["ts"] < 300:
         return cache["ids"]
     ids = None
     try:
@@ -287,15 +291,22 @@ def _fetch_subscribed_mp_ids():
             ids = {b.get("bookId") for b in (d.get("books") or []) if b.get("type") == 3}
     except Exception:
         pass
-    if ids is not None:
+    if ids:  # 空结果不缓存
         cache["ids"], cache["ts"] = ids, now
-    return ids
+    return ids or None
 
 
-def _is_unsubscribed(mp_id):
-    """mp_id 是否确认为「未订阅」。书架拉取失败时保守返回 False（按已订阅处理，避免误跳过）"""
-    subscribed = _fetch_subscribed_mp_ids()
-    return subscribed is not None and mp_id not in subscribed
+def _is_unsubscribed(mp_id, refresh=False):
+    """mp_id 是否确认为「未订阅」
+
+    书架拉取失败或返回空（无法判断）时返回 False，即按"需要人机验证"处理并弹页面，
+    避免把"需要验证"误判成"未订阅"而跳过弹窗。
+    refresh=True 时忽略缓存重新拉一次书架，用于"即将判定为未订阅"前的复核。
+    """
+    subscribed = _fetch_subscribed_mp_ids(refresh=refresh)
+    if not subscribed:
+        return False
+    return mp_id not in subscribed
 
 
 def probe_auth(auth):
@@ -399,9 +410,12 @@ def _inject_web_cookies(driver):
             continue
 
 
-def _verify_target_ok(mp_id):
-    """人机验证是否已通过：指定公众号看该接口是否不再 -2041；未指定则看整体登录探测"""
-    if not mp_id:
+def _verify_target_ok(mp_id, use_probe=False):
+    """人机验证是否已通过
+
+    use_probe=True（拿不到该公众号页面时）退化为账号级探测：probe_auth 返回 ok 即视为已通过。
+    """
+    if use_probe or not mp_id:
         return probe_auth(load_auth()) == "ok"
     r = _platform_request("GET", "/web/mp/articles",
                           params={"bookId": mp_id, "offset": 0}, timeout=15)
@@ -427,7 +441,14 @@ def open_weread_verify_page(mp_id=None, max_wait=180):
     Returns:
         bool: 是否已通过验证
     """
-    url = (_mp_reader_url(mp_id) if mp_id else _pick_mp_reader_url()) or WEREAD_BASE
+    url = None
+    if mp_id:
+        try:
+            url = _mp_reader_url(mp_id)  # 只从书架定位，避免探测接口多打一次 -2041
+        except Exception:
+            url = None
+    use_probe = url is None                     # 定位不到该公众号页面 → 用账号级探测判断
+    url = url or _pick_mp_reader_url() or WEREAD_BASE
     driver = _create_content_browser()
     if driver is None:
         print(f"  无法打开浏览器，请手动打开 {url} 完成人机验证后重跑")
@@ -447,7 +468,7 @@ def open_weread_verify_page(mp_id=None, max_wait=180):
                     break
             except Exception:
                 break
-            if _verify_target_ok(mp_id):
+            if _verify_target_ok(mp_id, use_probe=use_probe):
                 print("  人机验证已通过，继续抓取")
                 return True
         print("  未检测到验证通过（等待超时或窗口已关闭）")
