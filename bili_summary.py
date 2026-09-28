@@ -253,24 +253,54 @@ def login_and_save_cookie(driver) -> bool:
     return False
 
 # 主流程函数：获取UP主视频列表（逻辑清晰化）
+SPACE_CARD_SELECTOR = 'div.upload-video-card.grid-mode'
+
+
+def _is_space_empty_placeholder(driver) -> bool:
+    """空间页是否显示"还没投过视频"占位
+
+    该占位有时是假空：接口被风控/慢一拍时前端直接渲染成"空间主人还没投过视频，
+    这里什么也没有..."，重新加载页面内容就会出来。
+    """
+    try:
+        return driver.execute_script(
+            "return document.body.innerText.indexOf('还没投过视频') >= 0;")
+    except Exception:
+        return False
+
+
 def get_videos_by_selenium(driver, up_id: str):
     # 步骤1：初始化浏览器
     try:
         # 步骤2：前置登录（现在由调用者确保登录状态）
         # 注意：这个函数现在假设driver已经登录成功
         pass
-        # 步骤3：访问UP主空间
+        # 步骤3：访问UP主空间（假空占位时重新加载，最多 3 次）
         video_page_url = f'{BILI_SPACE}{up_id}/video'
-        driver.get(video_page_url)
-        print(f"访问URL：{video_page_url}")
-        # 注意：不执行 driver.refresh()，eager 策略下 refresh 会触发页面全量加载，
-        # 易导致 seleniumwire 后端(localhost:port) 超时/崩溃（空 Message + GetHandleVerifier）
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            driver.get(video_page_url)
+            if attempt == 1:
+                print(f"访问URL：{video_page_url}")
+            else:
+                print(f"访问URL：{video_page_url}（第{attempt}次加载）")
+            # 注意：不执行 driver.refresh()，eager 策略下 refresh 会触发页面全量加载，
+            # 易导致 seleniumwire 后端(localhost:port) 超时/崩溃（空 Message + GetHandleVerifier）；
+            # 假空时重新 driver.get 同一地址即可
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, SPACE_CARD_SELECTOR))
+                )
+                break
+            except Exception:
+                if attempt < max_attempts and _is_space_empty_placeholder(driver):
+                    print(f"UP主 {up_id} 空间页显示“还没投过视频”（疑似假空），重新加载页面...")
+                    time.sleep(2)
+                    continue
+                break
         # 步骤4：加载视频列表（无需滚动，直接获取前3个）
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'div.upload-video-card.grid-mode'))
-        )
         # 直接获取所有视频项（无需滚动加载），取前5个
-        items = driver.find_elements(By.CSS_SELECTOR, 'div.upload-video-card.grid-mode')[:5]  # 关键修改：限制前3个
+        items = driver.find_elements(By.CSS_SELECTOR, SPACE_CARD_SELECTOR)[:5]  # 关键修改：限制前3个
         
         # 提取每个视频的标题、URL和发布时间
         videos = []
