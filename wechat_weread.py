@@ -166,11 +166,23 @@ def get_mp_id(auth, account_name, example_link):
     return None
 
 
+def _wx_article_key(original_id):
+    """微信读书 originalId → 微信文章短链 key
+
+    接口返回的 originalId 里，真实 key 的 '_' 会写成 '~'（base64url 变体），
+    直接拼成 mp.weixin.qq.com/s/xxx 会落到"参数错误"页。
+    实测：'~' 换成 '_' 后，页面 msg_title/js_content 与目标文章完全一致
+    （原样打开报参数错误），因此这里统一还原。
+    """
+    return (original_id or "").replace("~", "_")
+
+
 def get_mp_articles(auth, mp_id, page=1, max_retries=2):
     """拉取公众号文章列表 [{id, title, picUrl, publishTime}]
 
     直连微信读书官方 web 接口 /web/mp/articles（cookie 认证，见 _platform_request）。
     响应结构: reviews[].subReviews[].review.mpInfo -> {originalId, title, pic_url, time}
+    其中 originalId 经 _wx_article_key 归一化后即为文章短链 key。
     分页: offset = (page-1) * 20，每页最多 20 篇。
     未登录/无 cookie 时返回 HTTP 200 + errCode(-2010)，须按 body 判断。
     """
@@ -224,7 +236,7 @@ def get_mp_articles(auth, mp_id, page=1, max_retries=2):
                         if not mp:
                             continue
                         result.append({
-                            "id": mp.get("originalId", ""),
+                            "id": _wx_article_key(mp.get("originalId", "")),
                             "title": mp.get("title", ""),
                             "picUrl": mp.get("pic_url", ""),
                             "publishTime": mp.get("time", rev.get("createTime", 0)),
