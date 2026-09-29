@@ -13,7 +13,7 @@ import numpy as np
 from deepseek_summary import deepseek_summary, FLASH_MODEL
 from momentum_analyzer import parse_targets_from_text
 from prediction_recorder import load_predictions
-from market_symbols import is_etf_code
+from market_symbols import is_etf_code, strip_prefix
 
 
 BILI_UP_KEYWORDS = {
@@ -50,13 +50,14 @@ _PERF_CACHE = {}
 _PERF_CACHE_LOCK = threading.Lock()
 
 
-def _get_index_df_full(code):
+def _get_index_df_full(code, need_until=None):
     """获取指数全量日K（已清洗：中文列/日期datetime/按日期升序）
-    底层走 index_kline 本地持久缓存：当日收盘后复用、跨日自动刷新，全进程只抓一次。
+    底层走 index_kline 本地持久缓存（与历史K线下载工具共用 D:/work/quant/stock_data/csv）：
+    本地已覆盖 need_until 就直接读盘，缺口才按日增量补齐，全进程只抓一次。
     """
     try:
         from index_kline import get_kline_full
-        return get_kline_full(code)
+        return get_kline_full(code, kind="index", need_until=need_until)
     except Exception as e:
         print(f"  指数K线缓存异常: {e}")
         return None
@@ -303,41 +304,85 @@ def extract_predictions_from_structured(content, blogger, channel):
 
 STOCK_CODE_MAP = {}
 _RESOLVE_CODE_LOCK = threading.Lock()  # 并发复盘时只允许一个线程抓全市场
+_SPOT_MAP_FILE = os.path.join("data_cache", "stock_code_map.json")
+_SPOT_MAP_DATE = None  # 全市场 名称→代码 映射已建好的日期
+
+
+def _clean_target_name(name):
+    """剥离标的名称里的注释：'国芳集团（推测映射：消费/零售龙头）' → '国芳集团'；
+    '有研硅/其他半导体设备材料股' → '有研硅'"""
+    s = str(name or "").strip()
+    s = re.sub(r'[（(][^）)]*[）)]', '', s)  # 去括号注释
+    s = s.split('/')[0]                     # 去 '/' 后的补充说明
+    return s.strip()
+
+
+def _ensure_spot_map():
+    """确保"当日"全市场 名称→代码 映射已建好：内存 → 当日落盘缓存 → 联网抓取
+
+    ak.stock_zh_a_spot() 要分页抓 70 页、耗时 15-25 秒且重复调用会被封 IP，
+    因此映射建好后按天落盘；当天再有新的名称 miss 直接命中缓存，不再重抓全市场。
+    """
+    global _SPOT_MAP_DATE
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _SPOT_MAP_DATE == today and STOCK_CODE_MAP:
+        return True
+    try:
+        with open(_SPOT_MAP_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("date") == today and data.get("map"):
+            STOCK_CODE_MAP.update(data["map"])
+            _SPOT_MAP_DATE = today
+            return True
+    except Exception:
+        pass
+
+    _wait_for_rate_limit()
+    df = None
+    for attempt in range(3):
+        try:
+            df = ak.stock_zh_a_spot()
+            if df is not None and not df.empty:
+                break
+        except Exception:
+            if attempt < 2:
+                time.sleep((attempt + 1) * 2)
+            continue
+    if df is None or df.empty:
+        return False
+
+    for _, row in df.iterrows():
+        name = str(row.get("名称", ""))
+        code = str(row.get("代码", ""))
+        if name and code:
+            # 剥离可能带有的 sh/sz 前缀，确保纯6位数字
+            STOCK_CODE_MAP[name] = re.sub(r'^(sh|sz|SH|SZ)', '', code)
+    _SPOT_MAP_DATE = today
+    try:
+        os.makedirs(os.path.dirname(_SPOT_MAP_FILE), exist_ok=True)
+        with open(_SPOT_MAP_FILE, "w", encoding="utf-8") as f:
+            json.dump({"date": today, "map": STOCK_CODE_MAP}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return True
 
 
 def _resolve_stock_code(target_name):
+    """标的名称 → 6位股票代码（当日映射只建一次，按天落盘复用）"""
     if not target_name:
         return None
-    if re.match(r'^\d{6}$', target_name):
-        return target_name
-    if target_name in STOCK_CODE_MAP:
-        return STOCK_CODE_MAP[target_name]
+    name = _clean_target_name(target_name)
+    if re.match(r'^\d{6}$', name):
+        return name
+    if name in STOCK_CODE_MAP:
+        return STOCK_CODE_MAP[name]
     with _RESOLVE_CODE_LOCK:
         # 双重检查：等待锁期间其他线程可能已完成全市场抓取
-        if target_name in STOCK_CODE_MAP:
-            return STOCK_CODE_MAP[target_name]
-        _wait_for_rate_limit()
-        # 优先使用新浪实时行情（3次重试，应对 ConnectionError）
-        df = None
-        for attempt in range(3):
-            try:
-                df = ak.stock_zh_a_spot()
-                if df is not None and not df.empty:
-                    break
-            except Exception:
-                if attempt < 2:
-                    time.sleep((attempt + 1) * 2)
-                continue
-        if df is None or df.empty:
+        if name in STOCK_CODE_MAP:
+            return STOCK_CODE_MAP[name]
+        if not _ensure_spot_map():
             return None
-        # 一次抓取构建全部 名称->代码 映射，后续标的直接命中，避免重复抓全市场
-        for _, row in df.iterrows():
-            name = str(row.get("名称", ""))
-            code = str(row.get("代码", ""))
-            if name and code:
-                # 剥离可能带有的 sh/sz 前缀，确保纯6位数字
-                STOCK_CODE_MAP[name] = re.sub(r'^(sh|sz|SH|SZ)', '', code)
-        return STOCK_CODE_MAP.get(target_name)
+        return STOCK_CODE_MAP.get(name) or STOCK_CODE_MAP.get(str(target_name).strip())
 
 
 # 指数名称 -> 规范代码（带 sh/sz 前缀；HSI 恒生走 yfinance 无前缀）
@@ -349,7 +394,7 @@ INDEX_NAME_MAP = {
 
 
 def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_DAYS,
-                           use_cache=True, bypass_rate_limit=False):
+                           use_cache=True, bypass_rate_limit=False, code=None):
     """获取标的从预测日之后的实际表现
 
     Args:
@@ -359,6 +404,8 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
         horizon: 评估周期（交易日）
         use_cache: 命中进程内缓存直接返回（同一标的当日只抓一次行情）
         bypass_rate_limit: 跳过全局 1s 限速锁（供复盘并发批量抓取使用）
+        code: 事件里已存的标的代码（可带 sh/sz 前缀）。传入后不再做"名称→代码"
+              全市场解析——此前每个名称 miss 都要抓一次 70 页全市场（15-25 秒）。
     """
     cache_key = (target_type, target, date_str, horizon)
     if use_cache:
@@ -373,13 +420,18 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
 
     end_date_dt = pred_date + timedelta(days=horizon + 5)
     start_date_dt = pred_date + timedelta(days=1)
+    # 本地K线只补到该日期即可满足本次评估（窗口右端 + 日历缓冲）
+    need_until = end_date_dt.strftime("%Y-%m-%d")
 
     try:
         # 注意：不再在此处做无条件 1s 限速——行情抓取统一走 index_kline 持久缓存，
         # 其内部只在真正联网刷新时限速；否则缓存命中也被每事件拖慢 1 秒
         # （曾造成回填 1000+ 事件被无谓串行 ~33 分钟）。
         if target_type == "index":
-            code = INDEX_NAME_MAP.get(target, "")
+            # 优先用事件里已存的指数代码（如 000852 中证1000），映射表只作兜底
+            code = strip_prefix(code) if code else ""
+            if not (code and len(code) == 6 and code.isdigit()):
+                code = INDEX_NAME_MAP.get(target, "")
             if not code:
                 for name, c in INDEX_NAME_MAP.items():
                     if name in target or target in name:
@@ -389,26 +441,28 @@ def get_actual_performance(target, target_type, date_str, horizon=EVAL_HORIZON_D
                 return None
 
             # 进程内缓存的全量K线（同指数只抓一次），按预测日切片
-            df = _get_index_df_full(code)
+            df = _get_index_df_full(code, need_until=need_until)
             if df is not None:
                 start_ts = pd.Timestamp(start_date_dt)
                 end_ts = pd.Timestamp(end_date_dt)
                 df = df[(df['日期'] >= start_ts) & (df['日期'] <= end_ts)]
         elif target_type == "stock":
-            code_match = re.search(r'(\d{6})', target)
-            if code_match:
-                code = code_match.group(1)
-            else:
-                code = _resolve_stock_code(target)
+            # 优先用事件里已存的 code，其次从 target 文本里挖，最后才做名称解析
+            code = strip_prefix(code) if code else None
+            if not code:
+                code_match = re.search(r'(\d{6})', str(target))
+                if code_match:
+                    code = code_match.group(1)
+            if not code:
+                code = strip_prefix(_resolve_stock_code(target))
             if not code:
                 return None
-            # 剥离可能带有的 sh/sz 前缀（_resolve_stock_code 可能返回带前缀的代码）
-            code = re.sub(r'^(sh|sz|SH|SZ)', '', code)
-            # 全量日K走本地持久缓存（index_kline 覆盖个股/ETF：当日收盘后复用文件、
-            # 跨日只对新增代码刷新；同代码跨预测日/跨周期共享一次抓取 → 回填由逐事件
-            # 全量重下变为每日增量，39分钟级耗时降到秒级）
+            # 全量日K走本地持久缓存（index_kline 与历史K线下载工具共用
+            # D:/work/quant/stock_data/csv：本地已覆盖所需日期直接读盘、缺口才按日增量补齐；
+            # 同代码跨预测日/跨周期共享一次读取 → 回填由逐事件全量重下变为秒级）
             from index_kline import get_kline_full as _kline_full
-            df = _kline_full(code, kind="etf" if is_etf_code(code) else "stock")
+            df = _kline_full(code, kind="etf" if is_etf_code(code) else "stock",
+                             need_until=need_until)
             df = _normalize_akshare_columns(df)
         else:
             return None
@@ -634,7 +688,8 @@ def run_backtest(months=2, eval_horizon=EVAL_HORIZON_DAYS):
 
             dir_label = {"bullish": "看多", "bearish": "看空", "neutral": "中性"}.get(direction, direction)
             print(f"  验证: {dir_label} {target} ({date_str}) ...", end=" ")
-            actual = get_actual_performance(target, target_type, date_str, eval_horizon)
+            actual = get_actual_performance(target, target_type, date_str, eval_horizon,
+                                           code=pred.get("code"))
 
             if actual is None:
                 print("无数据")

@@ -107,8 +107,9 @@ def update_signal_outcomes():
     """回填历史信号的实际收益
 
     遍历所有未回填的信号事件，获取实际收益并更新。
-    行情抓取走 backtest_analyzer → index_kline 本地持久缓存（指数/个股/ETF 全量日K，
-    当日收盘后复用文件、跨日只对新增代码做增量刷新），每条事件最多查 1日+5日 两次。
+    行情抓取走 backtest_analyzer → index_kline 本地持久缓存（与历史K线下载工具共用
+    D:/work/quant/stock_data/csv：本地已覆盖就直接读盘、缺口才按日增量补齐，
+    事件里已存的 code 直接使用，不再做"名称→代码"全市场解析），每条事件最多查 1日+5日 两次。
     逐条打印进度与耗时，便于观察（历史上曾无任何日志白跑 39 分钟）。
 
     Returns:
@@ -152,7 +153,8 @@ def update_signal_outcomes():
 
         # 计算1日收益
         if days_since >= 1:
-            actual_1d = get_actual_performance(target, target_type, pred_date, horizon=1)
+            actual_1d = get_actual_performance(target, target_type, pred_date,
+                                               horizon=1, code=code)
             if actual_1d:
                 event["actual_return_1d"] = actual_1d["return_pct"]
                 event["is_correct_1d"] = _check_correct(event["advice_direction"], actual_1d["return_pct"])
@@ -160,7 +162,8 @@ def update_signal_outcomes():
 
         # 计算5日收益
         if days_since >= 5:
-            actual_5d = get_actual_performance(target, target_type, pred_date, horizon=5)
+            actual_5d = get_actual_performance(target, target_type, pred_date,
+                                               horizon=5, code=code)
             if actual_5d:
                 event["actual_return_5d"] = actual_5d["return_pct"]
                 event["is_correct_5d"] = _check_correct(event["advice_direction"], actual_5d["return_pct"])

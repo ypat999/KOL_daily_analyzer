@@ -97,7 +97,8 @@ def generate_yesterday_review(current_date_str, base_dir="."):
             t = p.get("target")
             tt = p.get("target_type")
             return (tt, t), get_actual_performance(t, tt, prev_date, horizon=1,
-                                                   bypass_rate_limit=True)
+                                                   bypass_rate_limit=True,
+                                                   code=p.get("code"))
         with ThreadPoolExecutor(max_workers=6) as ex:
             futures = {ex.submit(_fetch, t): t for t in tasks}
             done = 0
@@ -140,7 +141,7 @@ def generate_yesterday_review(current_date_str, base_dir="."):
         
         # 计算从预测日到今天的表现（优先用并行预抓结果，未命中再现抓）
         actual = perf_map.get((target_type, target)) or get_actual_performance(
-            target, target_type, prev_date, horizon=1)
+            target, target_type, prev_date, horizon=1, code=pred.get("code"))
         
         if actual is None:
             no_data_count += 1
