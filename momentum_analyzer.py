@@ -298,7 +298,8 @@ def get_index_kline(code, days=150, max_retries=3):
     is_etf = _is_etf_code(code)
 
     # 优先使用 akshare（新浪数据源，国内稳定），底层走 index_kline 本地持久缓存：
-    # 当日15:30后直接读盘复用，跨日/盘中才重抓全量（新浪无按日期的增量接口）
+    # 与历史K线下载工具共用 D:/work/quant/stock_data/csv，本地已覆盖所需日期就直接读盘，
+    # 缺口才按日增量补齐（新浪无服务端增量接口，只会补缺失的那几天）
     if AKSHARE_AVAILABLE:
         try:
             from index_kline import get_kline_since
