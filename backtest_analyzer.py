@@ -138,7 +138,7 @@ def identify_bili_up_via_deepseek(content):
         sysprompt=(
             "你是一个B站UP主识别引擎。从视频字幕或总结文本中，"
             "识别出该视频的UP主名称。\n\n"
-            "已知UP主列表：江浙陈某、李大霄、鹰眼看盘、财经-沉默的螺旋、九先生笔记、连板\n\n"
+            "已知UP主列表：江浙陈某、鹰眼看盘、财经-沉默的螺旋、九先生笔记、连板、海螺复盘、生炸瓜\n\n"
             "输出严格JSON格式：\n"
             '{"up_name":"UP主名称"}\n\n'
             "如果无法识别，输出：{\"up_name\":\"unknown\"}"
@@ -162,6 +162,15 @@ def identify_bili_up_via_deepseek(content):
     return None
 
 
+_UP_TAG_RE = re.compile(r'^\s*【UP主：(.+?)】')
+
+
+def _extract_up_name_from_summary(content):
+    """读取总结开头的【UP主：xxx】标注（bili_summary 归档时写入的采集期昵称）"""
+    matched = _UP_TAG_RE.match(content or "")
+    return matched.group(1).strip() if matched else None
+
+
 def scan_bili_sources(archive_dir, date_str):
     sources = []
     for fname in os.listdir(archive_dir):
@@ -170,7 +179,7 @@ def scan_bili_sources(archive_dir, date_str):
             if not content or len(content.strip()) < 50:
                 continue
 
-            up_name = identify_bili_up(content)
+            up_name = _extract_up_name_from_summary(content) or identify_bili_up(content)
 
             if not up_name:
                 subtitle_fname = fname.replace("_summary.txt", ".txt")

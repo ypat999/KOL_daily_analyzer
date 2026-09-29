@@ -51,16 +51,19 @@ BROWSER_LOCK = threading.Lock()
 # 全局配置（集中管理）
 BILI_SPACE = "https://space.bilibili.com/"
 BILI_API = "https://api.bilibili.com/x/space/arc/search"
-UP_MIDS = [
-            "1609483218",  #江浙陈某
-            #"2137589551", #李大霄
-            "480472604",  #鹰眼看盘
-            "518031546", #财经-沉默的螺旋
-            "1421580803", #九先生笔记
-            "515688213", #连板
-            "471949556", #海螺复盘
-            "3546681834473583", #生炸瓜
-          ]  # B站UP主用户ID
+# UP主ID → 昵称：采集时就随视频一起记录，总结/归档据此标明"是谁说的"
+# （此前只记录标题，总结阶段只能靠 identify_bili_up 从正文里猜名字）
+UP_NAMES = {
+            "1609483218": "江浙陈某",
+            #"2137589551": "李大霄",  # 暂不采集
+            "480472604": "鹰眼看盘",
+            "518031546": "财经-沉默的螺旋",
+            "1421580803": "九先生笔记",
+            "515688213": "连板",
+            "471949556": "海螺复盘",
+            "3546681834473583": "生炸瓜",
+          }
+UP_MIDS = list(UP_NAMES.keys())  # B站UP主用户ID
 COOKIE_PATH = "bili_cookies.json"  # 统一cookie路径配置
 # 工具函数：浏览器初始化（反爬配置集中管理）
 # 修改setup_browser函数使用selenium-wire
@@ -269,6 +272,24 @@ def _is_space_empty_placeholder(driver) -> bool:
         return False
 
 
+def _get_space_up_name(driver, up_id: str = "") -> str:
+    """从UP主空间页提取昵称：DOM → 页面标题 → 配置映射，逐级兜底"""
+    for selector in ('.nickname', '#h-name', '.up-name', '.user-name'):
+        try:
+            txt = (driver.find_element(By.CSS_SELECTOR, selector).text or '').strip()
+            if txt:
+                return txt
+        except Exception:
+            continue
+    try:
+        matched = re.match(r'^(.+?)的个人空间', (driver.title or '').strip())
+        if matched:
+            return matched.group(1).strip()
+    except Exception:
+        pass
+    return UP_NAMES.get(str(up_id), "")
+
+
 def get_videos_by_selenium(driver, up_id: str):
     # 步骤1：初始化浏览器
     try:
@@ -298,7 +319,11 @@ def get_videos_by_selenium(driver, up_id: str):
                     time.sleep(2)
                     continue
                 break
-        # 步骤4：加载视频列表（无需滚动，直接获取前3个）
+        # 步骤4：先取UP主昵称，随视频一起记录（总结/归档要标明"是谁说的"）
+        up_name = _get_space_up_name(driver, up_id)
+        print(f"UP主 {up_id} 昵称：{up_name or '未知'}")
+
+        # 步骤5：加载视频列表（无需滚动，直接获取前3个）
         # 直接获取所有视频项（无需滚动加载），取前5个
         items = driver.find_elements(By.CSS_SELECTOR, SPACE_CARD_SELECTOR)[:5]  # 关键修改：限制前3个
         
@@ -323,7 +348,8 @@ def get_videos_by_selenium(driver, up_id: str):
             
             # 检查是否为限定小时内的视频（周末只收录周五收盘后发布的内容）
             if is_within_limit_hours(publish_date):
-                videos.append({"title": title, "url": video_url, "date": publish_date})
+                videos.append({"title": title, "url": video_url, "date": publish_date,
+                               "up_name": up_name, "up_id": up_id})
                 print(f"已添加限定时间内视频: {title} ({publish_date})")
             else:
                 print(f"跳过非限定时间内视频: {title} ({publish_date})")
@@ -598,13 +624,17 @@ def run_bili_task(prefer_web: bool = True):
                     print(f"视频《{video['title']}》无有效字幕信息")
                     continue
 
+            # UP主昵称在采集阶段就已随视频记录，缺失时才回头从正文猜
+            up_name = video.get("up_name") or ""
+
             # 检查总结文件是否已存在
             summary_path = os.path.join(archive_folder, f"bili_{video['title']}_summary.txt")
             if os.path.exists(summary_path):
                 print(f"视频《{video['title']}》总结已存在，跳过生成")
             else:
                 print("使用deepseek总结")
-                summary = timed(f"B站-视频总结 {video['title'][:12]}", deepseek_summary, subtitle,
+                summary = timed(f"B站-视频总结 {video['title'][:12]}", deepseek_summary,
+                    f"UP主：{up_name or '未知'}\n视频标题：{video['title']}\n\n{subtitle}",
                     sysprompt=(
                         "你是一位资深财经内容分析师，专注从B站财经UP主的视频稿中提炼投资价值。\n\n"
                         "分析框架：\n"
@@ -615,7 +645,8 @@ def run_bili_task(prefer_web: bool = True):
                         "输出要求：\n"
                         "- 重点突出投资操作相关内容，弱化无关闲聊\n"
                         "- 用「核心观点」「行业研判」「操作建议」「风险提示」四大板块组织总结\n"
-                        "- 对模糊表述保持审慎，明确指出哪些是确定信息、哪些是推测"
+                        "- 对模糊表述保持审慎，明确指出哪些是确定信息、哪些是推测\n"
+                        "- 总结开头标明UP主名字（素材中已给出），便于多UP主横向对比"
                     ),
                     userprompt=(
                         "请分析以下B站财经视频字幕，提炼投资相关信息：\n\n"
@@ -623,13 +654,15 @@ def run_bili_task(prefer_web: bool = True):
                     reasoning_effort="medium"
                 )
                 print(f"视频《{video['title']}》总结：{summary[:100]}...")
-                # 保存总结到归档文件夹
+                # 采集阶段没拿到名字时，才从总结/字幕正文里猜
+                if not up_name:
+                    up_name = identify_bili_up(summary) or identify_bili_up(subtitle) or "未知UP主"
+                # 保存总结到归档文件夹（带UP主标注，供后续多UP主汇总时区分是谁说的）
                 with open(summary_path, "w", encoding="utf-8") as f:
-                    f.write(summary)
+                    f.write(f"【UP主：{up_name}】\n{summary}")
                 print(f"总结已保存到: {summary_path}")
-                
+
                 # 提取并保存该视频的预测观点
-                up_name = identify_bili_up(summary) or identify_bili_up(subtitle) or "未知UP主"
                 record_predictions_from_advice(summary, "bili", up_name, current_date, archive_folder)
         except Exception as e:
             print(f"视频《{video['title']}》处理失败：{str(e)}")
@@ -663,7 +696,8 @@ def run_bili_task(prefer_web: bool = True):
             "输出严禁使用「可能」「或许」「不排除」等模糊词汇超过3次，每个判断必须有明确逻辑支撑。"
         ),
         userprompt=(
-            "以下是近期多位B站财经UP主视频内容的分析总结，请基于这些信息完成专业研判：\n\n"
+            "以下是近期多位B站财经UP主视频内容的分析总结（每条总结开头已标注UP主名字，"
+            "请按UP主区分各自观点，不要混淆）：\n\n"
             "请按以下结构输出完整分析报告：\n\n"
             "【一、宏观市场定调】\n"
             "- 综合多位UP主观点，当前市场处于什么阶段（进攻/防守/观望）？依据是什么？\n"
@@ -1037,6 +1071,9 @@ def get_videos_by_api(up_id: str, page: int = 1, page_size: int = 10, max_retrie
                         "title": title,
                         "url": video_url,
                         "date": created_date,
+                        # 空间投稿接口的 author 字段即UP主昵称，缺失时用配置映射兜底
+                        "up_name": video_data.get('author') or UP_NAMES.get(str(up_id), ""),
+                        "up_id": up_id,
                         "bvid": bvid,
                         "aid": video_data.get('aid'),
                         "play": video_data.get('play', 0),
