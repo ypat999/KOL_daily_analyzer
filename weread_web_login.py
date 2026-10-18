@@ -64,6 +64,13 @@ def _save_cookies(driver):
 
 # ===== 第一步：已保存凭据仍有效就不必扫码（不启动浏览器）=====
 _saved = _load_saved_cookies()
+if _saved:
+    # wr_skey 只有 ~1.5 小时寿命；先用 wr_rt 后台续期，避免过期就落到扫码
+    try:
+        from wechat_weread import renew_web_session
+        renew_web_session()
+    except Exception as e:
+        print(f"自动续期异常(忽略): {e}")
 _state = _probe_saved_auth() if _saved else None
 if _state in ("ok", "verify"):
     print(f"已保存的登录态仍然有效（服务端探测:{_state}），无需扫码")

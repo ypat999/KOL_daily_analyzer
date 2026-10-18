@@ -29,6 +29,7 @@
 import json, os, re, sys, time, random
 import requests
 from datetime import datetime
+from urllib.parse import quote
 
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from deepseek_summary import deepseek_summary
@@ -124,6 +125,105 @@ def load_web_cookies():
         return None
     with open(WEB_COOKIE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+_WEB_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36")
+
+
+def _save_web_cookies_from_driver(driver):
+    """把浏览器里的 weread cookie 回写 cookie 文件（保留 domain/path/expiry）
+
+    人机验证/续期之后浏览器会更新 wr_skey 等 cookie，若不回写，下次运行仍用
+    旧凭据，表现为反复要求人机验证、每天都要扫码。
+    """
+    try:
+        cookies = driver.get_cookies()
+    except Exception:
+        return False
+    out, seen = [], set()
+    for c in cookies:
+        if "weread.qq.com" not in (c.get("domain") or ""):
+            continue
+        name = c.get("name")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        item = {"name": name, "value": c.get("value", ""),
+                "domain": c.get("domain") or ".weread.qq.com",
+                "path": c.get("path") or "/"}
+        if c.get("expiry"):
+            item["expiry"] = c["expiry"]
+        out.append(item)
+    if not out:
+        return False
+    with open(WEB_COOKIE_FILE, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    return True
+
+
+def renew_web_session():
+    """用 wr_rt 续期 wr_skey（/web/login/renewal），成功后回写 cookie 文件
+
+    微信读书 wr_skey 很短命（续期响应里 Max-Age 仅 5400 秒 = 1.5 小时），过期后
+    旧逻辑直接转去扫码，于是表现为"每天都要重新登录"；而 wr_rt 有约 360 天有效期。
+    每次跑任务前调一次本函数即可在后台把 skey 续上，长期免扫码。
+
+    Returns:
+        bool: 续期成功并已回写 cookie
+    """
+    cookies = load_web_cookies()
+    if not cookies:
+        return False
+    session = requests.Session()
+    for c in cookies:
+        try:
+            session.cookies.set(c.get("name"), c.get("value", ""),
+                                domain=c.get("domain") or ".weread.qq.com",
+                                path=c.get("path") or "/")
+        except Exception:
+            continue
+    try:
+        r = session.post(f"{WEREAD_BASE}/web/login/renewal",
+                         json={"rq": quote("/web/mp/articles", safe=""), "ql": False},
+                         headers={"User-Agent": _WEB_UA, "Referer": f"{WEREAD_BASE}/web/shelf"},
+                         timeout=TIMEOUT)
+        data = r.json()
+    except Exception as e:
+        print(f"  微信读书续期请求异常: {e}")
+        return False
+    if data.get("succ") != 1:
+        print(f"  微信读书续期失败: {data.get('errMsg') or data}")
+        return False
+    # 合并回写：优先用服务端新值/新过期时间，未返回的沿用原值
+    fresh = {c.name: c for c in session.cookies if "weread.qq.com" in (c.domain or "")}
+    out, seen = [], set()
+    for c in cookies:
+        name = c.get("name")
+        if not name:
+            continue
+        nc = fresh.get(name)
+        item = {"name": name,
+                "value": nc.value if nc else c.get("value", ""),
+                "domain": c.get("domain") or (nc.domain if nc else ".weread.qq.com"),
+                "path": c.get("path") or (nc.path if nc else "/")}
+        expiry = (nc.expires if nc and nc.expires else c.get("expiry"))
+        if expiry:
+            item["expiry"] = expiry
+        out.append(item)
+        seen.add(name)
+    for name, nc in fresh.items():
+        if name in seen or not nc.value:
+            continue
+        item = {"name": name, "value": nc.value,
+                "domain": nc.domain or ".weread.qq.com", "path": nc.path or "/"}
+        if nc.expires:
+            item["expiry"] = nc.expires
+        out.append(item)
+    with open(WEB_COOKIE_FILE, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    print("  微信读书登录态已自动续期（wr_skey 有效期已刷新，无需扫码）")
+    return True
 
 
 def login_weread():
@@ -495,6 +595,8 @@ def open_weread_verify_page(mp_id=None, max_wait=180):
         print(f"  人机验证页面异常: {e}")
         return False
     finally:
+        # 验证/浏览过程中浏览器可能刷新了 wr_skey，回写持久化，下次不必重复验证
+        _save_web_cookies_from_driver(driver)
         try:
             driver.quit()
         except Exception:
@@ -825,6 +927,8 @@ def run_wechat_task(generate_advice=True, prefer_web_content=True):
             print("登录失败，微信任务中止")
             return None
     else:
+        # 先用 wr_rt 在后台续期 wr_skey（只有 1.5 小时寿命），避免过期就转去扫码
+        renew_web_session()
         # 登录校验即探测是否需要人机验证，命中就弹页面请你点（别等跑任务中途才发现）
         state = probe_auth(auth)
         if state == "invalid":
