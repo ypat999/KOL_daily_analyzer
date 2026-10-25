@@ -1,7 +1,7 @@
 import json
 import os
 
-PUSH_CONFIG_FILE = "push_config.json"
+PUSH_CONFIG_FILE = os.path.join("config", "push_config.json")
 
 
 def load_push_config():
@@ -32,7 +32,7 @@ def load_push_config():
         return None
 
 
-def _send_pushplus(token, title, content, template="markdown"):
+def _send_pushplus(token, title, content, template="markdown", max_retries=1):
     """通过 PushPlus 推送
 
     Args:
@@ -41,13 +41,17 @@ def _send_pushplus(token, title, content, template="markdown"):
         content: 消息内容
         template: 模板类型（markdown / html / txt），
                   纯文本内容（如 JSON）用 txt（PushPlus 合法模板，text 不存在）
+        max_retries: 失败重试次数（仅对瞬时错误重试；实名用户 1 分钟限 5 次请求，
+                     所以总请求数需控制）
 
     Returns:
         tuple: (ok: bool, msg: str)
     """
+    import time as _time
+
     import requests
 
-    url = "http://www.pushplus.plus/send"
+    url = "https://www.pushplus.plus/send"
     data = {
         "token": token,
         "title": title,
@@ -55,16 +59,31 @@ def _send_pushplus(token, title, content, template="markdown"):
         "template": template,
     }
 
-    try:
-        resp = requests.post(url, json=data, timeout=15)
-        result = resp.json()
-    except Exception as e:
-        return False, f"网络/解析错误: {e}"
+    last_msg = ""
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(url, json=data, timeout=15)
+            result = resp.json()
+        except Exception as e:
+            last_msg = f"网络/解析错误: {e}"
+        else:
+            code = result.get("code")
+            if code == 200:
+                return True, "推送成功"
+            # 999 = 服务端验证错误，具体原因在 data 里；500 = 系统异常，二者可能瞬时
+            detail = result.get("data")
+            last_msg = f"code={code} {result.get('msg', '未知错误')}"
+            if detail:
+                last_msg += f"（{detail}）"
+            if code not in (500, 999):
+                return False, last_msg
 
-    if result.get("code") == 200:
-        return True, "推送成功"
-    else:
-        return False, result.get("msg", f"未知错误: {result}")
+        if attempt < max_retries:
+            delay = 3
+            print(f"  推送失败（{last_msg}），{delay} 秒后重试 {attempt + 1}/{max_retries}")
+            _time.sleep(delay)
+
+    return False, last_msg
 
 
 def push_to_wechat(title, content, template="markdown"):
