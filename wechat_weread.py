@@ -38,7 +38,7 @@ from stage_timer import stage, timed
 
 # 微信读书官方 web 端直连（替代 wewe-rss 中转平台，平台 weread.111965.xyz 已下线）
 # 凭据：运行 weread_web_login.py 扫码登录一次，cookie 保存到 weread_web_cookies.json 长期复用
-WEB_COOKIE_FILE = "weread_web_cookies.json"
+WEB_COOKIE_FILE = os.path.join("state", "weread_web_cookies.json")
 WEREAD_BASE = "https://weread.qq.com"
 
 # ===== 微信任务总开关（微信读书桥接版）=====
@@ -46,9 +46,9 @@ WEREAD_BASE = "https://weread.qq.com"
 # 不需要 mp 后台 cookie。改为 False 可整体禁用微信任务。
 WECHAT_ENABLED = True
 
-AUTH_FILE = "weread_auth.json"          # 扫码登录凭据 {vid, token, username}
-MPID_CACHE_FILE = "weread_mpids.json"   # 公众号名 -> mp id 缓存
-CONFIG_FILE = "wechat_weread_accounts.json"
+AUTH_FILE = os.path.join("state", "weread_auth.json")            # 扫码登录凭据 {vid, token, username}
+MPID_CACHE_FILE = os.path.join("state", "weread_mpids.json")     # 公众号名 -> mp id 缓存
+CONFIG_FILE = os.path.join("config", "wechat_weread_accounts.json")
 TIMEOUT = 30
 LIMIT_HOURS = 18  # 平时限定 18 小时（与 wechat_get.py 一致）
 # 每页 20 篇（官方接口固定），MAX_PAGES 覆盖当日文章即可
@@ -696,6 +696,39 @@ def _fetch_article_content_web(url, driver):
         return None
 
 
+_WR_OPAQUE_RE = re.compile(r"^WR1[0-9A-Za-z]{20,}$")
+
+# JS 字符串字面量常见转义
+_JS_ESCAPE_MAP = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f",
+                  "v": "\v", "0": "\0", "'": "'", '"': '"', "\\": "\\", "/": "/"}
+
+
+def _is_opaque_article_id(article_id):
+    """微信读书给新文章的加密 originalId（WR1 开头长串）。
+
+    拼成 mp.weixin.qq.com/s/<id> 打开只会显示"参数错误"，不能当作可访问链接。
+    """
+    return bool(_WR_OPAQUE_RE.match(article_id or ""))
+
+
+def _is_opaque_mp_url(url):
+    """判断 mp.weixin.qq.com/s/<id> 是否用了微信读书加密 id"""
+    matched = re.search(r"/s/([^?#]+)", url or "")
+    return bool(matched and _is_opaque_article_id(matched.group(1)))
+
+
+def _js_unescape(text):
+    """还原 JS 字符串字面量里的转义：\\x0a / \\n / \\' / \\u4e2d 等"""
+    def _rep(matched):
+        seq = matched.group(1)
+        if seq.startswith("u") and len(seq) == 5:
+            return chr(int(seq[1:], 16))
+        if seq.startswith("x") and len(seq) == 3:
+            return chr(int(seq[1:], 16))
+        return _JS_ESCAPE_MAP.get(seq, seq)
+    return re.sub(r"\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)", _rep, text)
+
+
 def fetch_article_via_weread(review_id):
     """直接向微信读书要文章正文与真实原文短链（/web/mp/content）
 
@@ -703,6 +736,11 @@ def fetch_article_via_weread(review_id):
     mp.weixin.qq.com/s/<id> 只会落到"参数错误"页；但这个 id 正是 reviewId 的后半段，
     微信读书自己的阅读页就是用 /web/mp/content?reviewId=<mp_id>_<originalId> 取正文的
     （返回的文章 HTML 里 og:url / msg_link 带着真实的原文链接）。
+
+    正文有两种页面形态：
+    - 普通图文：DOM 里有 id="js_content"
+    - 纯文字消息（common_share.html）：没有 js_content，正文在 JS 的
+      text_page_info.content / content_noencode 里
 
     Returns:
         (content_text, original_url)；失败时返回 (None, None)
@@ -719,23 +757,27 @@ def fetch_article_via_weread(review_id):
         print(f"    微信读书正文接口失败: HTTP {getattr(r, 'status_code', None)}")
         return None, None
     html = r.text or ""
-    if "js_content" not in html and "rich_media_content" not in html:
+    if not any(k in html for k in ("js_content", "rich_media_content", "text_page_info")):
         print("    微信读书正文接口未返回正文（可能需人机验证或该文已删除）")
         return None, None
     # 真实原文链接：从 og:url / var msg_link 取
     # （形如 mp.weixin.qq.com/s?__biz=…&mid=…&idx=…&sn=…，HTML 内 &amp; 需反转义）。
     # 不能直接匹配 /s/<id>——那会命中页面里的"了解更多"争议横幅链接（每篇都一样）。
     url = None
-    for pattern in (r'og:url"\s+content="([^"]*mp\.weixin\.qq\.com/s\?[^"]*)"',
-                    r'var\s+msg_link\s*=\s*"([^"]*mp\.weixin\.qq\.com/s\?[^"]*)"'):
+    for pattern in (r'og:url"\s+content="([^"]*mp\.weixin\.qq\.com/s[^"]*)"',
+                    r'var\s+msg_link\s*=\s*"([^"]*mp\.weixin\.qq\.com/s[^"]*)"'):
         matched = re.search(pattern, html)
         if matched:
-            url = matched.group(1).replace("&amp;", "&").strip()
-            break
+            candidate = matched.group(1).replace("&amp;", "&").strip()
+            # 排除微信读书加密 id（拼出来的链接必然"参数错误"）
+            if not _is_opaque_mp_url(candidate):
+                url = candidate
+                break
     if not url:
         # 兜底：老格式 22 位短链（排除微信"了解更多"争议横幅）
         matched = re.search(r"mp\.weixin\.qq\.com/s/([A-Za-z0-9_\-~]{10,})", html)
-        if matched and matched.group(1) != "_2kC-fXw7UjneZSrsC9CVQ":
+        if (matched and matched.group(1) != "_2kC-fXw7UjneZSrsC9CVQ"
+                and not _is_opaque_article_id(matched.group(1))):
             url = f"https://mp.weixin.qq.com/s/{matched.group(1)}"
     # 正文文本：与 fetch_article_content 同一套清洗（js_content 取到 </div><script 为止）
     content = ""
@@ -754,6 +796,21 @@ def fetch_article_via_weread(review_id):
         candidate = re.sub(r'\s+', ' ', candidate).strip()
         if len(candidate) > len(content):
             content = candidate
+    # 纯文字消息：正文在 text_page_info 的 JS 字符串里
+    if len(content) < 20:
+        for pattern in (r"text_page_info\s*:\s*\{.*?content_noencode\s*:\s*'((?:\\.|[^'\\])*)'",
+                        r"text_page_info\s*:\s*\{.*?\bcontent\s*:\s*'((?:\\.|[^'\\])*)'"):
+            found = re.search(pattern, html, re.S)
+            if not found:
+                continue
+            candidate = _js_unescape(found.group(1))
+            candidate = re.sub(r'<[^>]+>', '', candidate)
+            for k, v in (('&nbsp;', ' '), ('&lt;', '<'), ('&gt;', '>'), ('&amp;', '&'),
+                         ('&quot;', '"'), ('&#39;', "'")):
+                candidate = candidate.replace(k, v)
+            candidate = re.sub(r'\s+', ' ', candidate).strip()
+            if len(candidate) > len(content):
+                content = candidate
     if len(content) < 20:
         print(f"    微信读书正文过短（{len(content)} 字），视为未取到")
         return None, None
@@ -766,17 +823,23 @@ def save_single_article_content(account_name, art, today, driver=None, prefer_we
     print(f"    抓取正文: {title}")
     content, original_url = timed(f"微信-正文接口 {str(title)[:12]}", fetch_article_via_weread,
                                   art.get("reviewId"), group="微信-正文抓取")
-    url = original_url or f"https://mp.weixin.qq.com/s/{art.get('id')}"
+    # 微信读书加密 id 拼出来的 /s/<id> 打开必报"参数错误"，不能当原文链接用
+    url = original_url
+    if not url and not _is_opaque_article_id(art.get("id")):
+        url = f"https://mp.weixin.qq.com/s/{art.get('id')}"
     if not content:
         print("    微信读书接口未取到正文，回退网页/requests 通道")
-        if prefer_web and driver is not None:
-            content = timed(f"微信-正文(网页) {str(title)[:12]}", _fetch_article_content_web, url,
-                            driver, group="微信-正文抓取")
+        if not url:
+            print("    该文只有微信读书加密 id，无可用原文链接，跳过网页/requests 兜底")
+        else:
+            if prefer_web and driver is not None:
+                content = timed(f"微信-正文(网页) {str(title)[:12]}", _fetch_article_content_web, url,
+                                driver, group="微信-正文抓取")
+                if not content:
+                    print("    网页方式未取到正文，requests 兜底")
             if not content:
-                print("    网页方式未取到正文，requests 兜底")
-        if not content:
-            content = timed(f"微信-正文 {str(title)[:12]}", fetch_article_content, url,
-                            group="微信-正文抓取")
+                content = timed(f"微信-正文 {str(title)[:12]}", fetch_article_content, url,
+                                group="微信-正文抓取")
     if content:
         save_single_article(account_name, art, content, today, url=url)
         return True
@@ -786,14 +849,15 @@ def save_single_article_content(account_name, art, today, driver=None, prefer_we
 
 def save_single_article(account_name, art, content, today, url=None):
     """保存单篇文章到归档（格式与 wechat_get.save_single_article 一致）"""
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
     os.makedirs(archive_dir, exist_ok=True)
     account_filename = f"{archive_dir}/wechat_{account_name}_{today}.txt"
-    url = url or f"https://mp.weixin.qq.com/s/{art.get('id')}"
+    if not url and not _is_opaque_article_id(art.get('id')):
+        url = f"https://mp.weixin.qq.com/s/{art.get('id')}"
     with open(account_filename, "a", encoding="utf-8") as f:
         f.write("文章:\n")
         f.write(f"标题: {art.get('title', '无标题')}\n")
-        f.write(f"链接: {url}\n")
+        f.write(f"链接: {url or '(未获取到原文链接)'}\n")
         f.write(f"发布时间: {datetime.fromtimestamp(art.get('publishTime', 0)).strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write("-" * 30 + "\n")
         f.write("完整内容:\n")
@@ -805,7 +869,7 @@ def save_single_article(account_name, art, content, today, url=None):
 
 def collect_all_articles_content(today):
     """收集当日所有公众号文章内容（与 wechat_get.collect_all_articles_content 一致）"""
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
     all_articles_content = []
     if not os.path.exists(archive_dir):
         return ""
@@ -826,7 +890,7 @@ def collect_all_articles_content(today):
 def generate_investment_advice(all_content, today):
     """基于所有文章内容生成投资建议（prompt 与 wechat_get 一致）"""
     print("开始生成投资分析建议...")
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
 
     investment_advice = deepseek_summary(
         all_content,
