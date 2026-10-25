@@ -67,13 +67,13 @@ except Exception:
     get_stock_kline = get_index_kline = None
     _calculate_kdj = None
 
-CONFIG_PATH = "monitor_config.json"
+CONFIG_PATH = os.path.join("config", "monitor_config.json")
 DEFAULT_CONFIG = {
     "poll_interval_seconds": 20,
     "popup_method": "tk",
     "beep": True,
     "popup_sticky_seconds": 0,
-    "log_dir": "monitor_logs",
+    "log_dir": os.path.join("data", "monitor_logs"),
     "params_file": "",
     "run_window": ["09:15", "16:00"],
     "two_market_codes": ["sh000001", "sz399106"],
@@ -476,7 +476,7 @@ def market_amount_history(days=10):
     return out
 
 
-AMOUNT_LOG_FILE = os.path.join("monitor_logs", "daily_amount.json")
+AMOUNT_LOG_FILE = os.path.join("data", "monitor_logs", "daily_amount.json")
 
 
 def load_amount_log():
@@ -1044,19 +1044,18 @@ def load_config():
 
 
 def resolve_params_file(cfg, today):
-    """定位参数文件：--params > config > 根目录/归档目录"""
+    """定位参数文件：--params > config > 当日归档目录 > 最新归档目录"""
     if cfg.get("params_file") and os.path.exists(cfg["params_file"]):
         return cfg["params_file"]
     cands = [
-        f"monitor_params_{today}.json",
-        os.path.join(f"archive_{today}", f"monitor_params_{today}.json"),
+        os.path.join("archive", today, f"monitor_params_{today}.json"),
     ]
     for c in cands:
         if os.path.exists(c):
             return c
-    # 回退：找最新的 monitor_params_*.json
+    # 回退：找归档目录里最新的 monitor_params_*.json
     import glob
-    hits = glob.glob("monitor_params_*.json") + glob.glob(os.path.join("archive_*", "monitor_params_*.json"))
+    hits = glob.glob(os.path.join("archive", "*", "monitor_params_*.json"))
     if hits:
         hits.sort(key=lambda p: os.path.getmtime(p), reverse=True)
         return hits[0]
@@ -1120,8 +1119,9 @@ def run(params, cfg, args):
     market_codes = cfg.get("two_market_codes") or ["sh000001", "sz399106"]
     interval = args.interval or int(cfg.get("poll_interval_seconds", 20))
 
-    os.makedirs(cfg.get("log_dir", "monitor_logs"), exist_ok=True)
-    log_path = os.path.join(cfg.get("log_dir", "monitor_logs"), f"monitor_log_{today}.txt")
+    log_dir = cfg.get("log_dir", os.path.join("data", "monitor_logs"))
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"monitor_log_{today}.txt")
 
     popup = PopupManager(method=args.popup or cfg.get("popup_method", "tk"),
                          beep=cfg.get("beep", True))

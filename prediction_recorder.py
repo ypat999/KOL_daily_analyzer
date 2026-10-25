@@ -35,7 +35,7 @@ def find_previous_archive_folder(current_date_str, base_dir="."):
     for i in range(1, 15):
         check_date = current_date - timedelta(days=i)
         date_str = check_date.strftime("%Y-%m-%d")
-        folder = os.path.join(base_dir, f"archive_{date_str}")
+        folder = os.path.join(base_dir, "archive", date_str)
         if os.path.isdir(folder):
             # 检查是否有预测文件
             has_preds = any(f.startswith("predictions_") and f.endswith(".json") 

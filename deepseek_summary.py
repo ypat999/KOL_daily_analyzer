@@ -1,4 +1,6 @@
 
+import os
+
 from openai import OpenAI
 
 # 轻量/结构化任务用 flash（低成本、快），深度提炼分析用 pro（默认）
@@ -30,7 +32,7 @@ DEFAULT_USERPROMPT = "请基于以下信息进行深度分析，提炼核心观�
 def load_api_key_from_file():
     """从deepseek_api_key.txt文件读取key值"""
     try:
-        with open("deepseek_api_key.txt", "r", encoding="utf-8") as f:
+        with open(os.path.join("config", "deepseek_api_key.txt"), "r", encoding="utf-8") as f:
             cookie = f.read().strip()
             if not cookie:
                 print("警告: deepseek_api_key.txt文件为空")

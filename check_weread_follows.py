@@ -8,13 +8,14 @@
 - 已订阅       → 正常，能拉到文章列表
 """
 import json
+import os
 import time
 
 import requests
 
-WEB_COOKIE_FILE = "weread_web_cookies.json"
-CONFIG_FILE = "wechat_weread_accounts.json"
-MPID_FILE = "weread_mpids.json"
+WEB_COOKIE_FILE = os.path.join("state", "weread_web_cookies.json")
+CONFIG_FILE = os.path.join("config", "wechat_weread_accounts.json")
+MPID_FILE = os.path.join("state", "weread_mpids.json")
 
 cookies = {c["name"]: c["value"] for c in json.load(open(WEB_COOKIE_FILE, encoding="utf-8"))}
 hdr = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

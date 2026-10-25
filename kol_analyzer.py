@@ -479,7 +479,6 @@ class KOLAnalyzer:
         if self.archive_folder:
             candidates += sorted(glob.glob(
                 os.path.join(self.archive_folder, "monitor_params_*.json")))
-        candidates += sorted(glob.glob("monitor_params_*.json"))
         for c in candidates:
             if os.path.exists(c):
                 return c

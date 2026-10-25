@@ -18,19 +18,26 @@
 - `extract_subtitle.py`: 提取B站视频字幕内容
 - `date_utils.py`: 统一的日期处理工具
 - `requirements.txt`: 项目依赖包列表
-- `bili_cookies.json`: B站登录凭证配置文件
-- `wechat_cookies.json`: 微信公众号登录凭证配置文件（JSON格式，含cookie和token；旧链路使用）
-- `wechat_weread_accounts.json`: 微信读书桥接版的公众号配置（名称+示例文章链接；新链路使用）
-- `weread_auth.json`: 微信读书扫码登录凭据（新链路使用，自动生成，勿提交到仓库）
-- `weread_mpids.json`: 公众号 mp id 缓存（新链路使用，自动生成）
-- `weibo_cookies.json`: 微博登录凭证配置文件
-- `deepseek_api_key.txt`: DeepSeek API密钥配置文件
-- `positions.json`: 持仓数据配置文件
-- `archive_YYYY-MM-DD/`: 按日期归档的分析结果文件夹
+- `config/`: 配置文件目录
+  - `wechat_weread_accounts.json`: 微信读书桥接版的公众号配置（名称+示例文章链接；新链路使用）
+  - `push_config.json`: PushPlus 推送配置
+  - `monitor_config.json`: 盘中监控配置
+  - `positions.json`: 持仓数据配置文件
+  - `deepseek_api_key.txt`: DeepSeek API密钥配置文件
+- `state/`: 运行时状态与登录凭据目录（不纳入版本控制）
+  - `bili_cookies.json`: B站登录凭证
+  - `weibo_cookies.json`: 微博登录凭证
+  - `wechat_cookies.json`: 微信公众号登录凭证（旧链路使用）
+  - `weread_auth.json`: 微信读书扫码登录凭据
+  - `weread_mpids.json`: 公众号 mp id 缓存
+  - `weread_web_cookies.json`: 微信读书 web 端 cookie
+  - `advice_history.json` / `signal_kb.jsonl`: 投资建议历史与信号知识库
+- `data/`: 数据缓存与监控日志目录
+- `archive/YYYY-MM-DD/`: 按日期归档的分析结果文件夹（如 `archive/2024-01-01/`）
 
 ## 配置文件说明
 
-### 1. B站Cookie配置文件 (`bili_cookies.json`)
+### 1. B站Cookie配置文件 (`state/bili_cookies.json`)
 
 #### 文件内容结构
 ```json
@@ -87,7 +94,7 @@
 1. **自动获取（推荐）**：
    - 首次运行`bili_summary.py`时，程序会自动打开浏览器
    - 手动扫码登录B站账号
-   - 程序会自动保存cookie到`bili_cookies.json`文件
+   - 程序会自动保存cookie到`state/bili_cookies.json`文件
    - 后续运行将自动使用保存的cookie
 
 2. **手动获取**：
@@ -105,7 +112,7 @@
 - `DedeUserID__ckMd5`: 用户ID的MD5值，必须包含
 - `sid`: 会话ID，建议包含
 
-### 2. 微信公众号Cookie配置文件 (`wechat_cookies.json`)
+### 2. 微信公众号Cookie配置文件 (`state/wechat_cookies.json`)
 
 #### 文件内容结构
 ```json
@@ -119,7 +126,7 @@
 1. **自动获取（推荐）**：
    - 运行`wechat_login.py`，程序会自动打开浏览器
    - 扫码登录微信公众号平台（需注册一个公众号）
-   - 登录成功后，程序会自动提取cookie和token并保存到`wechat_cookies.json`
+   - 登录成功后，程序会自动提取cookie和token并保存到`state/wechat_cookies.json`
 
 2. **手动获取**：
    - 在浏览器中登录微信公众号平台（mp.weixin.qq.com）
@@ -138,7 +145,7 @@
 - 可通过`cookie_validator.py`统一验证cookie有效性
 - 建议使用Chrome或Firefox浏览器获取
 
-### 3. DeepSeek API密钥配置文件 (`deepseek_api_key.txt`)
+### 3. DeepSeek API密钥配置文件 (`config/deepseek_api_key.txt`)
 
 #### 文件内容结构
 ```
@@ -158,7 +165,7 @@ sk-your-api-key-here
    - 复制生成的API密钥
 
 3. **保存密钥**：
-   - 将API密钥保存到`deepseek_api_key.txt`文件
+   - 将API密钥保存到`config/deepseek_api_key.txt`文件
    - 确保文件只包含密钥字符串，不包含其他内容
    - 密钥格式通常为`sk-`开头的一串字符
 
@@ -191,7 +198,7 @@ sk-your-api-key-here
    ]
    ```
 
-2. **Cookie配置**：确保`bili_cookies.json`文件中有有效的B站登录cookie
+2. **Cookie配置**：确保`state/bili_cookies.json`文件中有有效的B站登录cookie
    ```json
    [
      {
@@ -209,7 +216,7 @@ sk-your-api-key-here
    ]
    ```
 
-3. **DeepSeek API密钥**：确保`deepseek_api_key.txt`文件中的API密钥有效
+3. **DeepSeek API密钥**：确保`config/deepseek_api_key.txt`文件中的API密钥有效
    ```
    sk-your-api-key-here
    ```
@@ -223,7 +230,7 @@ sk-your-api-key-here
 2. 配置cookie文件
    ```bash
    # 首次运行时会自动打开浏览器进行登录，程序会自动保存cookie
-   # 或手动将有效的B站cookie保存到bili_cookies.json文件中
+   # 或手动将有效的B站cookie保存到 state/bili_cookies.json 文件中
    ```
 
 ## 微信公众号文章分析工具 (wechat_get.py)
@@ -253,7 +260,7 @@ sk-your-api-key-here
    }
    ```
 
-2. **Cookie配置**：在`wechat_cookies.json`文件中配置有效的微信公众号平台cookie
+2. **Cookie配置**：在`state/wechat_cookies.json`文件中配置有效的微信公众号平台cookie
    ```json
    {
        "cookie": "your_cookie_string_here",
@@ -261,7 +268,7 @@ sk-your-api-key-here
    }
    ```
 
-3. **DeepSeek API密钥**：确保`deepseek_api_key.txt`文件中的API密钥有效
+3. **DeepSeek API密钥**：确保`config/deepseek_api_key.txt`文件中的API密钥有效
    ```
    sk-your-api-key-here
    ```
@@ -301,10 +308,10 @@ pip install -r requirements.txt
 ```
 
 ### 2. 配置文件设置
-1. 设置B站cookie (`bili_cookies.json`)
-2. 设置微信cookie (`wechat_cookies.json`)
-3. 设置微博cookie (`weibo_cookies.json`)
-4. 设置DeepSeek API密钥 (`deepseek_api_key.txt`)
+1. 设置B站cookie (`state/bili_cookies.json`)
+2. 设置微信cookie (`state/wechat_cookies.json`)
+3. 设置微博cookie (`state/weibo_cookies.json`)
+4. 设置DeepSeek API密钥 (`config/deepseek_api_key.txt`)
 5. 根据需要调整UP主和公众号列表
 
 > 也可以直接运行`python cookie_validator.py`进行全平台统一登录验证，程序会自动检测cookie有效性并引导登录。
@@ -328,7 +335,7 @@ python weibo_get.py
 ```
 
 ### 4. 查看结果
-程序运行后会在当前目录下创建按日期命名的归档文件夹（如`archive_2024-01-01`），其中包含：
+程序运行后会在当前目录下创建按日期命名的归档文件夹（如`archive/2024-01-01`），其中包含：
 - B站视频分析结果
 - 微信公众号文章分析结果
 - 综合投资建议报告
@@ -364,7 +371,7 @@ python weibo_get.py
 - 脚本会自动过滤限定时间内发布的文章（周末运行时，收录周五收盘后所有时间的内容）
 - 包含反爬虫机制，添加了随机延迟
 - 支持断点续传，已保存的文章不会重复处理
-- 文章按日期归档保存在`archive_YYYY-MM-DD/`文件夹中
+- 文章按日期归档保存在`archive/YYYY-MM-DD/`文件夹中
 - 自动检测微信cookie有效性，失效时会自动打开浏览器让用户扫码登录并更新cookie
 
 ## B站视频分析工具 (bili_summary.py)
@@ -388,7 +395,7 @@ python weibo_get.py
    ]
    ```
 
-2. **Cookie配置**：首次运行时会自动生成`bili_cookies.json`文件保存登录凭证
+2. **Cookie配置**：首次运行时会自动生成`state/bili_cookies.json`文件保存登录凭证
 
 3. **DeepSeek API密钥**：同微信工具配置
 
@@ -440,7 +447,7 @@ python weibo_get.py
 8. 按日期保存所有分析结果到归档文件夹
 
 ### 输出文件
-运行后会在 `archive_YYYY-MM-DD/` 文件夹中生成：
+运行后会在 `archive/YYYY-MM-DD/` 文件夹中生成：
 - `bili_投资建议_日期.txt` - B站分析结果
 - `wechat_投资建议_日期.txt` - 微信分析结果
 - `weibo_投资建议_日期.txt` - 微博分析结果
@@ -465,7 +472,7 @@ python weibo_get.py
 - 提供可配置的AI分析参数
 
 ### 配置
-在`deepseek_api_key.txt`文件中配置API密钥：
+在`config/deepseek_api_key.txt`文件中配置API密钥：
 ```
 sk-your-api-key-here
 ```
@@ -668,7 +675,7 @@ add_index_position('510300', '沪深300ETF', 1000, 4.0, '海通证券')
 ```
 
 ### 持仓数据格式
-持仓数据保存在 `positions.json` 文件中：
+持仓数据保存在 `config/positions.json` 文件中：
 ```json
 {
   "stocks": [

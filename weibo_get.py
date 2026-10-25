@@ -31,7 +31,7 @@ WEIBO_USER_IDS = [
     ]
 
 WEIBO_URL = "https://weibo.com/"
-WEIBO_COOKIE_PATH = "weibo_cookies.json"
+WEIBO_COOKIE_PATH = os.path.join("state", "weibo_cookies.json")
 
 def setup_browser():
     """初始化浏览器"""
@@ -638,7 +638,7 @@ def get_weibo_content(driver, user_id):
         print(f"获取用户 {error_username} 微博内容失败: {str(e)}")
         # 尝试获取页面截图用于调试
         try:
-            screenshot_path = f"weibo_error_{error_username}.png"
+            screenshot_path = os.path.join("data", f"weibo_error_{error_username}.png")
             driver.save_screenshot(screenshot_path)
             print(f"已保存错误截图到: {screenshot_path}")
         except:

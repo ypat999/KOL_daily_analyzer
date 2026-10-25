@@ -64,7 +64,7 @@ UP_NAMES = {
             "3546681834473583": "生炸瓜",
           }
 UP_MIDS = list(UP_NAMES.keys())  # B站UP主用户ID
-COOKIE_PATH = "bili_cookies.json"  # 统一cookie路径配置
+COOKIE_PATH = os.path.join("state", "bili_cookies.json")  # 统一cookie路径配置
 # 工具函数：浏览器初始化（反爬配置集中管理）
 # 修改setup_browser函数使用selenium-wire
 def setup_browser():

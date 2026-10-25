@@ -37,7 +37,7 @@ url = "https://mp.weixin.qq.com/cgi-bin/appmsg"
 def load_cookie_from_file():
     """从wechat_cookies.json文件以JSON格式读取cookie和token值"""
     try:
-        with open("wechat_cookies.json", "r", encoding="utf-8") as f:
+        with open(os.path.join("state", "wechat_cookies.json"), "r", encoding="utf-8") as f:
             data = json.load(f)
             if not data:
                 print("警告: wechat_cookies.json文件为空")
@@ -96,9 +96,9 @@ def check_and_update_cookie():
                         "cookie": cookie,
                         "token": token
                     }
-                    with open("wechat_cookies.json", "w", encoding="utf-8") as f:
+                    with open(os.path.join("state", "wechat_cookies.json"), "w", encoding="utf-8") as f:
                         json.dump(cookie_data, f, ensure_ascii=False, indent=4)
-                    print("新的cookie和token已保存到 wechat_cookies.json 文件")
+                    print("新的cookie和token已保存到 state/wechat_cookies.json 文件")
                 except Exception as e:
                     print(f"保存cookie到文件时出错: {e}")
                 
@@ -382,7 +382,7 @@ def get_article_content(article_url, title):
 def is_article_saved(account_name, title, today):
     """检查文章是否已经保存过"""
     # 确保使用传入的today参数作为归档目录名
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
     account_filename = f"{archive_dir}/wechat_{account_name}_{today}.txt"
     
     if not os.path.exists(account_filename):
@@ -401,7 +401,7 @@ def is_article_saved(account_name, title, today):
 def save_single_article(account_name, article, content, today):
     """保存单篇文章内容"""
     # 确保使用传入的today参数作为归档目录名
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
     if not os.path.exists(archive_dir):
         os.makedirs(archive_dir)
     
@@ -428,7 +428,7 @@ def save_single_article(account_name, article, content, today):
     
     # 提取并保存该公众号文章的预测观点
     if content and len(content.strip()) > 50:
-        record_predictions_from_advice(content, "wechat", account_name, today, f"archive_{today}")
+        record_predictions_from_advice(content, "wechat", account_name, today, os.path.join("archive", today))
 
 
 def save_daily_content(all_content):
@@ -437,14 +437,14 @@ def save_daily_content(all_content):
     today, date_reason, archive_folder = get_current_analysis_date()
     print_date_info()
     
-    filename = f"daily_content_{today}.json"
+    filename = os.path.join(archive_folder, f"daily_content_{today}.json")
     
     # 保存完整内容（仅包含文章列表信息）
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(all_content, f, ensure_ascii=False, indent=4)
     
     print(f"文章列表信息已保存到 {filename}")
-    print(f"完整文章内容已保存到 archive_{today} 目录")
+    print(f"完整文章内容已保存到 {os.path.join('archive', today)} 目录")
 
 
 def get_all_accounts_daily_content():
@@ -532,7 +532,7 @@ def get_all_accounts_daily_content():
 def collect_all_articles_content(today):
     """收集当日所有公众号文章内容"""
     # 确保使用传入的today参数作为归档目录名
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
     all_articles_content = []
     
     if not os.path.exists(archive_dir):
@@ -560,7 +560,7 @@ def generate_investment_advice(all_content, today):
     print("开始生成投资分析建议...")
     
     # 确保使用传入的today参数作为归档目录名
-    archive_dir = f"archive_{today}"
+    archive_dir = os.path.join("archive", today)
     
     # 调用deepseek进行投资分析
     investment_advice = deepseek_summary(

@@ -12,7 +12,7 @@
   2. LLM 提炼（--llm，更完整）：调用 DeepSeek 按 JSON schema 提炼复杂/组合条件
 
 用法：
-    python generate_monitor_params.py --advice archive_2026-08-21/综合投资建议_2026-08-21.txt
+    python generate_monitor_params.py --advice archive/2026-08-21/综合投资建议_2026-08-21.txt
     python generate_monitor_params.py --advice ... --date 2026-08-25
     python generate_monitor_params.py --advice ... --llm
     python generate_monitor_params.py --advice ... --out monitor_params_2026-08-25.json
@@ -57,7 +57,7 @@ SYMBOL_TABLE = {
     "恒瑞医药": ("600276", "stock"),
 }
 
-DEFAULT_OUT_TEMPLATE = "monitor_params_{date}.json"
+DEFAULT_OUT_TEMPLATE = os.path.join("data", "monitor_params_{date}.json")
 
 
 # ============================================================
@@ -588,7 +588,7 @@ def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=Fals
         advice_text: 综合投资建议全文
         date: 目标交易日（YYYY-MM-DD），由调用方按数据日的下一交易日计算。
               传空时兜底从建议文本"作战计划（YYYY-MM-DD）"提取。
-        archive_folder: 归档目录（生成文件写到这里 + 项目根目录）
+        archive_folder: 归档目录（每日一份参数文件写到这里）
         use_llm: 是否调用 DeepSeek 补充复杂条件
         out_path: 自定义输出路径（优先于 archive_folder）
         meta_extra: 附加 meta 字段
@@ -634,9 +634,10 @@ def generate_monitor_params(advice_text, date, archive_folder=None, use_llm=Fals
     paths = []
     if out_path:
         paths.append(out_path)
+    elif archive_folder:
+        # 只写归档目录（每日一份），不再往项目根目录落副本
+        paths.append(os.path.join(archive_folder, f"monitor_params_{date}.json"))
     else:
-        if archive_folder:
-            paths.append(os.path.join(archive_folder, f"monitor_params_{date}.json"))
         paths.append(DEFAULT_OUT_TEMPLATE.format(date=date))
 
     saved = None

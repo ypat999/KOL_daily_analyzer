@@ -128,9 +128,9 @@ def _get_chrome_service():
         return None
 
 COOKIE_FILES = {
-    "weibo": "weibo_cookies.json",
-    "bili": "bili_cookies.json",
-    "wechat": "wechat_cookies.json"
+    "weibo": os.path.join("state", "weibo_cookies.json"),
+    "bili": os.path.join("state", "bili_cookies.json"),
+    "wechat": os.path.join("state", "wechat_cookies.json")
 }
 
 def check_cookie_exists(platform: str) -> bool:

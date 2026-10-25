@@ -102,14 +102,16 @@ def _normalize_akshare_columns(df):
 def find_archive_dirs(base_dir=".", months=2):
     dirs = []
     cutoff = datetime.now() - timedelta(days=months * 30)
-    for entry in os.listdir(base_dir):
-        full = os.path.join(base_dir, entry)
-        if os.path.isdir(full) and entry.startswith("archive_"):
+    archive_root = os.path.join(base_dir, "archive")
+    if not os.path.isdir(archive_root):
+        return dirs
+    for entry in os.listdir(archive_root):
+        full = os.path.join(archive_root, entry)
+        if os.path.isdir(full):
             try:
-                date_str = entry.replace("archive_", "")
-                dir_date = datetime.strptime(date_str, "%Y-%m-%d")
+                dir_date = datetime.strptime(entry, "%Y-%m-%d")
                 if dir_date >= cutoff:
-                    dirs.append((dir_date, full, date_str))
+                    dirs.append((dir_date, full, entry))
             except ValueError:
                 continue
     dirs.sort(key=lambda x: x[0])
@@ -313,7 +315,7 @@ def extract_predictions_from_structured(content, blogger, channel):
 
 STOCK_CODE_MAP = {}
 _RESOLVE_CODE_LOCK = threading.Lock()  # 并发复盘时只允许一个线程抓全市场
-_SPOT_MAP_FILE = os.path.join("data_cache", "stock_code_map.json")
+_SPOT_MAP_FILE = os.path.join("data", "data_cache", "stock_code_map.json")
 _SPOT_MAP_DATE = None  # 全市场 名称→代码 映射已建好的日期
 
 

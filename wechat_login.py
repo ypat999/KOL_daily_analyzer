@@ -1,5 +1,6 @@
 import requests
 import json
+import os
 import time
 import re
 import urllib.parse
@@ -79,7 +80,7 @@ def update_wechat_cookie():
             "token": token
         }
         
-        with open("wechat_cookies.json", "w", encoding="utf-8") as f:
+        with open(os.path.join("state", "wechat_cookies.json"), "w", encoding="utf-8") as f:
             json.dump(cookie_data, f, ensure_ascii=False, indent=4)
         
         print("新的cookie和token已保存到 wechat_cookies.json 文件")

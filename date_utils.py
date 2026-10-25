@@ -3,6 +3,7 @@
 """
 
 from datetime import datetime, timedelta
+import os
 
 
 def get_friday_date_for_weekend(current_date: datetime) -> datetime:
@@ -76,7 +77,7 @@ def get_current_analysis_date():
         date_str = current_date.strftime('%Y-%m-%d')
         date_reason = f"正常运行，使用当天日期"
     
-    archive_folder = f'archive_{date_str}'
+    archive_folder = os.path.join('archive', date_str)
     
     return date_str, date_reason, archive_folder
 

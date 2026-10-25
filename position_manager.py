@@ -5,7 +5,7 @@ from momentum_analyzer import get_stock_kline, calculate_momentum_factors, get_i
 from market_symbols import normalize, strip_prefix
 from stage_timer import stage
 
-POSITION_FILE = "positions.json"
+POSITION_FILE = os.path.join("config", "positions.json")
 
 def load_positions():
     """加载持仓数据

@@ -9,7 +9,7 @@
 import json, os, time, sys
 from bili_summary import setup_browser
 
-COOKIE_FILE = "weread_web_cookies.json"
+COOKIE_FILE = os.path.join("state", "weread_web_cookies.json")
 LOGIN_OK = False
 
 

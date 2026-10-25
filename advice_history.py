@@ -27,7 +27,7 @@ import re
 from datetime import datetime, timedelta
 
 
-HISTORY_FILE = "advice_history.json"
+HISTORY_FILE = os.path.join("state", "advice_history.json")
 MAX_HISTORY_DAYS = 30  # 保留最近30天
 
 

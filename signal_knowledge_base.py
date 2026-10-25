@@ -37,7 +37,7 @@ from datetime import datetime, timedelta
 from market_symbols import normalize
 
 
-KB_FILE = "signal_kb.jsonl"
+KB_FILE = os.path.join("state", "signal_kb.jsonl")
 
 
 def record_signal_event(date_str, target, target_type, code, signals, advice_direction):

@@ -214,20 +214,23 @@ __marimo__/
 
 
 
-archive_*/
-bili_cookies.json
+# ===== 运行时数据 / 归档（不纳入版本控制）=====
+# archive/YYYY-MM-DD 每日归档、data/ 缓存与日志、state/ 登录凭据与状态
+archive/*
+data/*
+state/*
+# 保留目录本身（git 不跟踪空目录）
+!.gitkeep
+
+# 敏感配置（密钥 / 持仓 / 推送 token）
+config/deepseek_api_key.txt
+config/positions.json
+config/push_config.json
+config/monitor_config.json
+
+# 运行时生成的 json（仅保留公众号账号配置）
+*.json
+!config/wechat_weread_accounts.json
 content_list.json
 daily_content_*
-wechat_cookies*
-weread_auth.json
-weread_mpids.json
-deepseek_api_key*
-weibo_cookies.json
-positions.json
-push_config.json
-signal_kb.jsonl
-*.json
-!wechat_weread_accounts.json
-weread_qr.png
-monitor_logs/
-data_cache/
+weibo_error_*.png
