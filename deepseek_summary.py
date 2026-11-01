@@ -118,6 +118,18 @@ def deepseek_summary(subtitle,
             break
         content += more
 
+    if not content.strip():
+        comp = getattr(usage, "completion_tokens", "?") if usage else "?"
+        print(f"⚠️ 模型返回空正文（finish_reason={finish_reason}, completion_tokens={comp}, "
+              f"reasoning_tokens={reasoning_tokens}），关闭思考链重试一次…")
+        content, finish_reason, usage, reasoning_tokens = _call(messages, {"type": "disabled"}, None)
+
+    if not content.strip():
+        comp = getattr(usage, "completion_tokens", "?") if usage else "?"
+        raise RuntimeError(
+            f"DeepSeek 返回空内容（finish_reason={finish_reason}, completion_tokens={comp}, "
+            f"reasoning_tokens={reasoning_tokens}，输入 {len(subtitle)} 字符）")
+
     if finish_reason == "length":
         print(f"❌ 续写{rounds}次后仍被截断，正文不完整（{len(content)}字符）。"
               f"请调高 max_tokens 或降低 reasoning_effort。")

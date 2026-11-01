@@ -38,16 +38,18 @@ class KOLAnalyzer:
         
         bili_advice_path = os.path.join(self.archive_folder, f"bili_投资建议_{self.current_date}.txt")
         if os.path.exists(bili_advice_path):
-            print(f"B站投资建议文件已存在: {bili_advice_path}")
-            print("跳过B站任务执行")
             try:
                 with open(bili_advice_path, "r", encoding="utf-8") as f:
                     bili_advice = f.read()
-                print(f"已读取现有B站投资建议，长度: {len(bili_advice)}字符")
-                return bili_advice
             except Exception as e:
                 print(f"读取现有B站投资建议失败: {str(e)}")
-                return None
+                bili_advice = ""
+            if bili_advice.strip():
+                print(f"B站投资建议文件已存在: {bili_advice_path}")
+                print("跳过B站任务执行")
+                print(f"已读取现有B站投资建议，长度: {len(bili_advice)}字符")
+                return bili_advice
+            print(f"现有B站投资建议为空，重新生成: {bili_advice_path}")
         
         try:
             bili_advice = run_bili_task()

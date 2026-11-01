@@ -302,7 +302,12 @@ def record_predictions_from_advice(advice_text, channel, blogger, date_str, arch
         return []
 
     print(f"  提取预测观点: [{channel}] {blogger}")
-    predictions = extract_predictions(advice_text, channel, blogger, date_str)
+    try:
+        predictions = extract_predictions(advice_text, channel, blogger, date_str)
+    except Exception as e:
+        # 预测提取是附属步骤，失败不应中断主流程（投资建议已生成）
+        print(f"  预测提取失败，跳过 [{channel}/{blogger}]: {e}")
+        return []
 
     if predictions:
         print(f"  提取到 {len(predictions)} 条预测观点")
