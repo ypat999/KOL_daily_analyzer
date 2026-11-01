@@ -339,6 +339,56 @@ def validate_weread_auth() -> tuple:
         return True, "微信读书凭据存在（网络异常，有效性待验证）"
     return True, "微信读书凭据有效"
 
+def wait_for_manual_login(driver, is_logged_in, platform, timeout=300, interval=5):
+    """轮询等待用户在浏览器完成登录，检测到登录态后自动继续（无需在终端按 Enter）
+
+    Args:
+        driver: Selenium WebDriver 实例
+        is_logged_in: 无参回调，返回 bool（True 表示已登录）
+        platform: 平台名，用于提示文案
+        timeout: 最长等待秒数
+        interval: 轮询间隔秒数
+
+    Returns:
+        bool: 是否检测到登录成功
+    """
+    start = time.time()
+    last_hint = 0
+    print(f"等待{platform}登录中…（最长等待 {timeout}s，登录成功后自动继续）")
+    while time.time() - start < timeout:
+        try:
+            if is_logged_in():
+                print(f"✓ 检测到{platform}已登录")
+                return True
+        except Exception:
+            pass  # 页面跳转/元素未就绪时继续等待
+        elapsed = int(time.time() - start)
+        if elapsed - last_hint >= 30:
+            print(f"  仍在等待{platform}登录…（已等待 {elapsed}s）")
+            last_hint = elapsed
+        time.sleep(interval)
+    print(f"✗ 等待{platform}登录超时（{timeout}s），未检测到登录状态")
+    return False
+
+
+def _has_weibo_login_cookie(driver):
+    """微博登录态：SUB + (SUBP 或 SSOLoginState)"""
+    try:
+        names = {c.get("name"): (c.get("value") or "") for c in driver.get_cookies()}
+    except Exception:
+        return False
+    return bool(names.get("SUB")) and bool(names.get("SUBP") or names.get("SSOLoginState"))
+
+
+def _has_bili_login_cookie(driver):
+    """B站登录态：SESSDATA + DedeUserID"""
+    try:
+        names = {c.get("name"): (c.get("value") or "") for c in driver.get_cookies()}
+    except Exception:
+        return False
+    return bool(names.get("SESSDATA")) and bool(names.get("DedeUserID"))
+
+
 def manual_login_weibo() -> bool:
     """手动登录微博并保存cookie
     
@@ -367,10 +417,11 @@ def manual_login_weibo() -> bool:
         except Exception:
             pass
         print("\n" + "="*50)
-        print("请在浏览器中手动登录微博...")
-        print("登录完成后，请按Enter键继续...")
+        print("请在浏览器中手动登录微博，程序会自动检测登录状态…")
         print("="*50 + "\n")
-        input()
+        if not wait_for_manual_login(driver, lambda: _has_weibo_login_cookie(driver), "微博"):
+            driver.quit()
+            return False
         
         time.sleep(3)
         
@@ -418,10 +469,11 @@ def manual_login_bili() -> bool:
         except Exception:
             pass
         print("\n" + "="*50)
-        print("请在浏览器中手动登录B站...")
-        print("登录完成后，请按Enter键继续...")
+        print("请在浏览器中手动登录B站，程序会自动检测登录状态…")
         print("="*50 + "\n")
-        input()
+        if not wait_for_manual_login(driver, lambda: _has_bili_login_cookie(driver), "B站"):
+            driver.quit()
+            return False
         
         time.sleep(3)
         

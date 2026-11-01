@@ -13,7 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-from cookie_validator import _get_chrome_service
+from cookie_validator import _get_chrome_service, wait_for_manual_login, _has_weibo_login_cookie
 from deepseek_summary import deepseek_summary
 from date_utils import get_current_analysis_date, ensure_archive_folder, print_date_info, get_friday_date_for_weekend
 from prediction_recorder import record_predictions_from_advice
@@ -169,15 +169,15 @@ def login_and_save_cookie(driver):
         return False
 
 def perform_manual_login(driver):
-    """执行手动登录流程"""
+    """执行手动登录流程（浏览器内登录，程序自动检测登录态，无需在终端按 Enter）"""
     driver.get(WEIBO_URL)
     print("\n" + "="*50)
-    print("请在浏览器中手动登录微博...")
-    print("登录完成后，请按Enter键继续...")
+    print("请在浏览器中手动登录微博，程序会自动检测登录状态…")
     print("="*50 + "\n")
-    input()
-    
-    time.sleep(5)
+    if not wait_for_manual_login(driver, lambda: _has_weibo_login_cookie(driver), "微博"):
+        return False
+
+    time.sleep(2)
     
     try:
         cookies = driver.get_cookies()
